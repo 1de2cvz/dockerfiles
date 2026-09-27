@@ -1,0 +1,60 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "timezone": "Asia/Shanghai",
+  "schedule": [
+    "before 9am on monday"
+  ],
+  "packageRules": [
+    {
+      "description": "基础镜像的 Python / Node / Java 只自动升级补丁版本和 digest；主、次版本由人决定（改 images/base/versions.env），所有项目一起升",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchDepNames": [
+        "python",
+        "node",
+        "eclipse-temurin"
+      ],
+      "matchUpdateTypes": [
+        "major",
+        "minor"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "前端镜像的 Nginx 只自动升级补丁版本和 digest；换稳定版（如 1.30 → 1.32）改 images/web/versions.env",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchDepNames": [
+        "nginxinc/nginx-unprivileged"
+      ],
+      "matchUpdateTypes": [
+        "major",
+        "minor"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "基础镜像、前端镜像的补丁版本和 digest 放在一个 PR 里",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchFileNames": [
+        "images/base/**",
+        "images/web/**"
+      ],
+      "groupName": "base image"
+    },
+    {
+      "description": "GitHub Actions 升级合成一个 PR",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "github actions"
+    }
+  ]
+}

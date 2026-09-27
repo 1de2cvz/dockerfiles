@@ -1,0 +1,54 @@
+name: versions
+
+# 每周检查基础镜像和前端镜像里各运行时的维护期：剩余不足 180 天时开一个 issue 提醒，
+# 情况解除后自动关闭；已经停止维护时本工作流失败。
+
+on:
+  schedule:
+    - cron: '17 1 * * 1'   # 每周一 09:17（北京时间）
+  pull_request:
+    paths:
+      - images/base/versions.env
+      - images/base/Dockerfile
+      - images/web/versions.env
+      - images/web/Dockerfile
+      - scripts/check_versions.py
+      - .github/workflows/versions.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 检查版本
+        run: |
+          strict=""
+          if [ "${{ github.event_name }}" != "pull_request" ]; then strict="--strict"; fi
+          python3 scripts/check_versions.py $strict --issue-file eol-issue.md
+
+      - name: 更新提醒 issue
+        if: always() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          title="运行时版本需要升级"
+          num=$(gh issue list --state open --search "\"$title\" in:title" --json number,title \
+                --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          if [ -f eol-issue.md ]; then
+            if [ -n "$num" ]; then
+              gh issue edit "$num" --body-file eol-issue.md
+            else
+              gh issue create --title "$title" --body-file eol-issue.md
+            fi
+          elif [ -n "$num" ]; then
+            gh issue close "$num" --comment "所有运行时都在维护期内，自动关闭。"
+          fi

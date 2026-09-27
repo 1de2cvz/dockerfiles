@@ -1,6 +1,6 @@
 # 容器镜像规范
 
-本规范约束组织内所有应用镜像的构建、运行、发布和文档。制定时参照了两个现有项目：`doc-vector`（单进程 Python 服务）和 `agent-runtime`（Python + Node 多进程一体化镜像）。第 10 节是这两个项目的现状对照和整改清单。
+本规范约束组织内所有应用镜像的构建、运行、发布和文档。所有项目基于同一个共享基础镜像（第 2 节）。制定时参照了两个现有项目：`doc-vector`（单进程 Python 服务）和 `agent-runtime`（Python + Node 多进程一体化镜像）。第 10 节是这两个项目的现状对照和整改清单。
 
 条目分两级：
 
@@ -22,21 +22,54 @@
 
 ## 2. 基础镜像
 
-1. 【必须】标签里写明 Debian 代号，例如 `python:3.12-slim-trixie`，不写 `python:3.12-slim`。不带代号的标签会随上游切换 Debian 大版本，glibc 和系统库会悄悄变掉。
-2. 【必须】统一使用 **Debian 13 (trixie)**。Debian 12 (bookworm) 已于 2026 年 6 月结束官方安全支持，转入 LTS 维护，新项目不再使用。
-3. 【必须】基础镜像固定到 digest，并通过构建参数暴露，方便换成内网镜像仓库地址：
+所有项目共用一个基础镜像 [`images/base`](images/base/README.md)（纯前端项目的最终阶段例外，用 [`images/web`](images/web/README.md)，见 5.6）：Python 3.12 + Node.js 24，Debian 13 (trixie)，另有带 Java 8 的变体。环境只维护这一套，每个项目在上面加自己的依赖和代码，仍然各自发布独立的镜像。
+
+1. 【必须】项目的构建阶段和最终阶段都基于共享基础镜像，不直接使用 `python:*`、`node:*`、`eclipse-temurin:*` 等官方镜像。按是否用到 Java 选变体：
+
+   | 项目 | 构建阶段 | 最终阶段 |
+   |---|---|---|
+   | 不用 Java | `base:py3.12-node24-build` | `base:py3.12-node24` |
+   | 用 Java | `base:py3.12-node24-java8-build`（JDK） | `base:py3.12-node24-java8`（JRE） |
+
+   Java 单独做成变体，是因为 JRE 8 约 106 MB，不用 Java 的项目不应该背这个体积和漏洞面。基础镜像都通过构建参数引用，固定到 digest，由 Renovate 升级：
 
    ```dockerfile
-   ARG PYTHON_IMAGE=python:3.12.14-slim-trixie@sha256:<digest>
-   ARG NODE_IMAGE=node:22.23.3-trixie-slim@sha256:<digest>
-   FROM ${PYTHON_IMAGE} AS runtime
+   ARG BUILD_IMAGE=ghcr.io/1de2cvz/base:py3.12-node24-build@sha256:<digest>
+   ARG RUNTIME_IMAGE=ghcr.io/1de2cvz/base:py3.12-node24@sha256:<digest>
    ```
 
-   digest 由 Renovate 自动提 PR 升级（同一次升级里一起更新所有项目的同一个基础镜像），合并前走 CI 全量检查。
-4. 【必须】一个镜像内的所有构建阶段使用同一个 Debian 代号。从别的镜像拷贝可执行文件时（例如从 Node 镜像拷 `node`），来源镜像的代号必须和目标一致，否则可能因为 glibc 版本不同而运行失败。
-5. 【必须】语言运行时统一主版本：**Python 3.12**、**Node.js 22**。
-   - Node 22 于 2027-04-30 结束维护，需在此之前统一升到 Node 24。
-   - 升级主版本时所有项目一起升，不各自升。
+2. 【必须】项目需要的系统包、运行时版本和基础镜像不同时，先提出来讨论能不能加进基础镜像，不在项目里另起一套环境。确实只有一个项目需要的系统包，在项目的最终阶段用基础镜像自带的 `apt-install <包>` 安装（自动处理内网 CA 证书、清理索引）。
+3. 基础镜像自身遵守以下规则（维护 `images/base` 时适用）：
+   - 上游镜像标签写明 Debian 代号，例如 `python:3.12-slim-trixie`，不写 `python:3.12-slim`。不带代号的标签会随上游切换 Debian 大版本，glibc 和系统库会悄悄变掉。
+   - 统一使用 **Debian 13 (trixie)**。Debian 12 (bookworm) 已于 2026-07-11 结束常规安全支持，转入 LTS 维护。
+   - 上游镜像固定到 digest。补丁版本和 digest 由 Renovate 自动提 PR，CI 检查通过后合并。
+   - 所有构建阶段使用同一个 Debian 代号。从别的镜像拷贝可执行文件时（例如从 Node 镜像拷 `node`），来源的代号必须和目标一致，否则可能因为 glibc 版本不同而无法运行。例外：Temurin 的 JDK/JRE 是与发行版无关的通用构建，可以从任意 Temurin 镜像拷贝。
+4. 【必须】运行时主版本以 [`images/base/versions.env`](images/base/versions.env) 为唯一来源，当前为：
+
+   | 运行时 | 主版本 | 停止维护 | 下一步 |
+   |---|---|---|---|
+   | Debian | 13 (trixie) | 常规安全支持到 2028-08-09，LTS 到 2030-06-30 | — |
+   | Python | 3.12 | 2028-10-31 | 2028 年上半年评估 3.14 |
+   | Node.js | 24 LTS | 2028-04-30 | Node 26 于 2026-10-28 进入 LTS，2027 年评估 |
+   | Java | 8（Eclipse Temurin） | 2030-12-31 | 由用到 Java 的项目决定是否升到 17 / 21 |
+   | Nginx（前端镜像） | 1.30 稳定版 | 下一个稳定版发布时（约 2027 年 4 月） | 届时换 1.32 |
+
+   日期来自 endoflife.date，以第 5 条的自动检查结果为准；本表只在升级时手工更新。Nginx 的版本在 [`images/web/versions.env`](images/web/versions.env)，同样纳入检查。
+5. 【必须】版本维护靠自动检查，不靠人记：
+   - `scripts/check_versions.py` 核对 Dockerfile 里的上游镜像与 `versions.env` 一致，并查询每个运行时的停止维护日期。
+   - 基础镜像的 CI 在每个 PR 上做一致性检查，不一致就失败。
+   - `versions` 工作流每周一运行：剩余不足 180 天时自动开 issue「运行时版本需要升级」，情况解除后自动关闭；已经停止维护时工作流失败。
+   - 升级主版本的步骤：改 `versions.env` → 改 Dockerfile 的上游镜像 → CI 通过后发布新的环境标签（例如 `py3.12-node26`）。旧标签保留，同时给出各项目的切换期限；期限过后旧标签停止更新。
+6. 【必须】项目在代码里声明运行时版本，让本地开发、IDE 和 CI 在版本不对时尽早报错，而不是等到构建镜像：
+
+   | 运行时 | 在项目里声明 |
+   |---|---|
+   | 全部 | 根目录放 [`mise.toml`](templates/mise.toml)，本地用 mise 自动切换到相同的主版本 |
+   | Python | `pyproject.toml`：`requires-python = ">=3.12,<3.13"` |
+   | Node | `package.json`：`"engines": {"node": ">=24 <25"}`，并在 `.npmrc` 写 `engine-strict=true` |
+   | Java | Maven：`maven.compiler.source` / `target` 设为 `1.8`；Gradle：`sourceCompatibility = 1.8` |
+
+   基础镜像升级主版本时，以上声明随切换一起修改。
 
 ## 3. 构建
 
@@ -47,13 +80,13 @@
 
    | 构建参数 | 默认值 | 用途 |
    |---|---|---|
-   | `PYTHON_IMAGE`、`NODE_IMAGE` | 带 digest 的官方镜像 | 基础镜像 |
-   | `UV_IMAGE` | `ghcr.io/astral-sh/uv:<固定版本>` | 提供 `uv` 可执行文件 |
+   | `BUILD_IMAGE`、`RUNTIME_IMAGE` | 带 digest 的共享基础镜像 | 构建阶段 / 最终阶段的基础镜像 |
    | `PIP_INDEX_URL` | `https://pypi.org/simple` | PyPI 源。用 uv 时在 Dockerfile 里转成 `UV_DEFAULT_INDEX` |
    | `NPM_REGISTRY` | `https://registry.npmjs.org` | npm 源，传给 `npm ci --registry` |
+   | `APT_MIRROR` | 空（官方源） | Debian 源，只在需要 `apt-get install` 时使用 |
    | `--secret id=ca_cert` | 无 | HTTPS 解密代理的 CA 证书，只在安装依赖的 `RUN` 里挂载，不进镜像。按工具设置：pip 用 `PIP_CERT`，uv 用 `SSL_CERT_FILE`，npm 用 `NODE_EXTRA_CA_CERTS` |
 
-5. 【必须】`uv` 固定版本，从 `UV_IMAGE` 拷入（`COPY --from=${UV_IMAGE} /uv /bin/uv`），不用 `pip install uv`。
+5. 【必须】`uv`、`npm` 使用 build 基础镜像里的版本，不在项目里 `pip install uv` 或另外安装。
 6. 【建议】依赖安装使用 BuildKit 缓存挂载（`RUN --mount=type=cache,...`），先复制锁文件安装依赖，再复制源码，让代码改动不触发依赖重装。
 
 ## 4. 依赖
@@ -72,8 +105,8 @@
 1. 【必须】应用进程不以 root 运行。
    - 单进程镜像：用 `USER` 指令切换用户。
    - 多进程镜像：root 只用于启动脚本修正数据卷属主，然后用 `setpriv` 降权启动各进程。
-2. 【必须】UID/GID 固定且 ≥ 10000。不使用 1000，它通常就是宿主机上的第一个普通用户，挂载宿主机目录时属主会混淆。
-3. 【必须】UID 按角色统一登记，新角色在此表追加：
+2. 【必须】UID/GID 固定且 ≥ 10000（例外：前端镜像 `web` 沿用官方 Nginx 的 uid 101，它没有数据卷，不涉及属主问题）。不使用 1000，它通常就是宿主机上的第一个普通用户，挂载宿主机目录时属主会混淆。
+3. 【必须】UID 按角色统一登记，新角色在此表追加。基础镜像已创建 `app`，其他用户由项目按此表创建：
 
    | UID/GID | 用户名 | 角色 |
    |---|---|---|
@@ -86,7 +119,7 @@
 ### 5.2 PID 1 与信号
 
 1. 【必须】单进程镜像：用 exec 形式启动（`CMD ["uvicorn", ...]`，或在 shell 脚本最后一步 `exec`），让应用本身成为 PID 1，能收到 `SIGTERM`。
-2. 【必须】多进程镜像：`ENTRYPOINT ["tini", "--", "<启动脚本>"]`。bash 做 PID 1 时不会回收被托孤的孙进程，工具调用、子进程多的服务会积累僵尸进程。
+2. 【必须】多进程镜像：`ENTRYPOINT ["tini", "--", "<启动脚本>"]`（基础镜像已包含 `tini`）。bash 做 PID 1 时不会回收被托孤的孙进程，工具调用、子进程多的服务会积累僵尸进程。
 3. 【必须】收到 `SIGTERM` 后 10 秒内优雅退出（Docker 默认 10 秒后发 `SIGKILL`）。
 
 ### 5.3 端口与健康检查
@@ -110,16 +143,36 @@
 2. 【必须】密钥不写进 Dockerfile 的 `ARG` 或 `ENV`，也不打进镜像。
 3. 【必须】缺少必填配置或配置互相矛盾时，容器立即以退出码 **64** 退出，并在日志里写明缺什么。
 4. 【建议】多进程镜像中，密钥只传给需要它的进程（参照 `agent-runtime` 启动 Node 进程前剥离 `GATEWAY_*`）。
-5. 【必须】镜像统一预设：
+5. 【必须】镜像统一预设（基础镜像已设置，项目不要覆盖）：
 
    | 变量 | 值 |
    |---|---|
    | `LANG` | `C.UTF-8` |
-   | `TZ` | `Asia/Shanghai`（确认镜像内有 `/usr/share/zoneinfo`，没有就安装 `tzdata`） |
+   | `TZ` | `Asia/Shanghai` |
    | `PYTHONUNBUFFERED`、`PYTHONDONTWRITEBYTECODE` | `1`（有 Python 时） |
    | `NODE_ENV` | `production`（有 Node 时） |
 
 6. 【必须】日志输出到 stdout/stderr，不写日志文件。
+
+### 5.6 前端静态文件与 Nginx
+
+1. 【必须】共享基础镜像和应用镜像里不装 Nginx。
+2. 【必须】前端页面在构建阶段编译成静态文件，运行时不跑 Vite、webpack 等开发服务器。按部署方式选择：
+
+   | 情况 | 做法 |
+   |---|---|
+   | 前端和某个后端同属一个产品 | 由后端同源托管静态文件（`agent-runtime` 的做法），不需要 Nginx |
+   | 独立的纯前端项目 | 单独一个镜像：构建阶段用 `base:*-build` 编译，最终阶段 `FROM ghcr.io/1de2cvz/web:nginx1.30`，只复制编译结果。见 [`images/web`](images/web/README.md) 和 [`templates/static-site.Dockerfile`](templates/static-site.Dockerfile) |
+   | HTTPS、域名、多服务按路径转发 | 部署层统一一个反向代理（Nginx 或 Caddy），单独一个容器，放在 compose 里，不放进应用镜像 |
+
+3. 【必须】页面只从同源加载脚本和字体，不引用外部 CDN，保证内网可用。
+4. 【必须】纯前端镜像按环境变化的配置（接口地址等）用 `WEB_PUBLIC_*` 环境变量传入，页面从 `/config.js` 读取，不在构建时写死，保证同一个镜像能部署到各个环境。这些值会发给浏览器，不能放密钥。
+
+### 5.7 Java 进程
+
+1. 【必须】设置 `-XX:MaxRAMPercentage=75.0`。JVM 默认只用容器内存限制的 1/4 作为最大堆，浪费内存，也容易误判为内存不足。
+2. 【建议】用 `JAVA_OPTS` 之类的环境变量传入 JVM 参数，不写死在启动命令里。不要用 `JAVA_TOOL_OPTIONS`：它会让每次启动 JVM 都在日志里打印一行提示。
+3. 【必须】需要显示或生成中文（图片、PDF、Excel 等）的项目自行安装中文字体：`apt-install fonts-noto-cjk`。基础镜像只带 DejaVu 字体。
 
 ## 6. 安全
 
@@ -187,13 +240,13 @@
 
 | 条目 | doc-vector | agent-runtime |
 |---|---|---|
-| 2.1 标签写明 Debian 代号 | ❌ `python:3.12-slim`（实际解析为 trixie） | ✅ `-bookworm` |
-| 2.2 使用 trixie | ✅ | ❌ bookworm |
-| 2.3 基础镜像固定 digest | ❌ | ❌ |
-| 2.3 基础镜像可替换 | ✅ `PYTHON_IMAGE` | ❌ |
+| 2.1 使用共享基础镜像 | ❌ `python:3.12-slim` | ❌ `python:3.12-slim-bookworm` + `node:22-bookworm-slim` |
+| 2.1 基础镜像固定 digest | ❌ | ❌ |
+| 2.1 基础镜像可替换 | ✅ `PYTHON_IMAGE` | ❌ |
+| 2.4 运行时主版本（Node 24） | —（不用 Node） | ❌ Node 22 |
 | 3.1 多阶段构建 | ✅ | ✅ |
 | 3.4 内网构建参数、CA 证书 | ✅ | ❌ |
-| 3.5 uv 固定版本 | —（未用 uv） | ❌ `pip install uv` |
+| 3.5 使用基础镜像的 uv / npm | —（未用 uv） | ❌ `pip install uv` |
 | 4.1 按锁文件安装 | ⚠️ 经 `requirements.txt` 中转 | ✅ `uv sync --frozen`、`npm ci` |
 | 5.1 非 root，UID ≥ 10000 | ✅ 10001 | ⚠️ `node` 用户为 1000 |
 | 5.2 PID 1 | ✅ exec uvicorn | ⚠️ bash 做 PID 1，无 tini |
@@ -205,25 +258,30 @@
 | 7.3 `latest` 只指正式版 | ⚠️ | ❌ `latest` 指向 `main` |
 | 7.2 CI 推送到 ghcr.io | ❌ 本地脚本构建 | ✅ |
 | 7.5 CI 生成离线包 | ❌ 本地脚本导出 | ❌ |
+| 2.6 在项目里声明运行时版本 | 未知 | 未知 |
 | 8.3 CI 冒烟测试 | ⚠️ 有 `smoke_test.py`，未接入 CI | ✅ `check_allinone.ts` |
 
 ### 10.2 doc-vector 整改
 
-1. 基础镜像改为 `python:3.12.14-slim-trixie@sha256:<digest>`。
-2. 构建阶段改为 `uv sync --frozen --no-dev`，删除 `requirements.txt` 中转。
+1. 构建阶段改为 `FROM` 基础镜像的 build 变体，用 `uv sync --frozen --no-dev` 安装到 `/opt/venv`，删除 `requirements.txt` 中转；最终阶段 `FROM` runtime 变体。可直接参照 [`templates/python-service.Dockerfile`](templates/python-service.Dockerfile)。
+2. 删除 Dockerfile 里自己设置的时区、字符集、`app` 用户，改用基础镜像提供的（UID 同为 10001，数据卷不受影响）。
 3. 版本号以 git tag 为准，CI 校验 `app/__init__.py` 与 tag 一致。
 4. 查清镜像体积：解压后 933 MB，其中 venv 546 MB，剩余约 390 MB 明显多于基础镜像本身。用 `docker history doc-vector:1.0.0` 找出大的层，重点检查有没有 `RUN chown -R` 造成的重复层（第 3.2 条）。
+   - 注意：基础镜像含 Node（约 121 MB），`doc-vector` 用不到，换基础镜像后体积会相应增加。这是统一环境的代价；如果离线包大小敏感，先完成上一步的体积排查。
 5. 接入可复用 workflow：推送 ghcr.io、生成离线包；`scripts/smoke_test.py` 作为冒烟测试接入 CI。`scripts/build_image.sh` 保留给本地和内网构建用。
 6. 确认 `milvus-lite`、`pymupdf` 有 arm64 wheel，再决定是否开启 arm64。
+7. 按 2.6 在项目里声明版本：根目录加 `mise.toml`，`pyproject.toml` 写 `requires-python = ">=3.12,<3.13"`。
 
 ### 10.3 agent-runtime 整改
 
-1. 所有阶段从 bookworm 换到 trixie：`python:3.12-slim-trixie`、`node:22-trixie-slim`，并固定 digest；增加 `PYTHON_IMAGE`、`NODE_IMAGE` 构建参数。
-2. 增加 `PIP_INDEX_URL`、`NPM_REGISTRY` 构建参数和 `ca_cert` secret 支持。
-3. `pip install uv` 改为从固定版本的 `UV_IMAGE` 拷入。
-4. 安装 `tini`，`ENTRYPOINT ["tini", "--", "agent-runtime"]`。
-5. `node` 用户 UID 从 1000 改为 10003。启动脚本已有"只改属主不对的文件"的逻辑，现有数据卷会在首次启动新版本时自动迁移；用宿主机目录挂载数据卷的部署需要提前说明。
-6. 预设 `TZ=Asia/Shanghai`，确认有时区数据。
+1. 五个构建阶段都改为 `FROM` 基础镜像的 build 变体（`sidecar-deps`、`sidecar-build`、`web` 用其中的 npm，`gateway-deps` 用其中的 uv），最终阶段 `FROM` runtime 变体。不再单独引入 `node:*` 镜像，也不再 `pip install uv`；Debian 随之从 bookworm 换到 trixie。
+2. Node 从 22 升到 24。重点回归：`node:sqlite`（会话账本）、`mysql2`、pi（确认 `@earendil-works/pi-coding-agent` 的 `engines` 允许 Node 24），然后跑完整的 `scripts/check_allinone.ts`。
+3. 增加 `PIP_INDEX_URL`、`NPM_REGISTRY` 构建参数和 `ca_cert` secret 支持。
+4. `ENTRYPOINT ["tini", "--", "agent-runtime"]`（tini 由基础镜像提供）。
+5. 新建 `gateway`（10002）、`node`（10003）用户，`node` 的 UID 从 1000 改为 10003。启动脚本已有"只改属主不对的文件"的逻辑，现有数据卷会在首次启动新版本时自动迁移；用宿主机目录挂载数据卷的部署需要提前说明。
+6. 时区、字符集改用基础镜像提供的（`Asia/Shanghai`、`C.UTF-8`）。
 7. 引入语义化版本和 tag 发布；`latest` 改为只指正式版本。
 8. 接入可复用 workflow，打 tag 时生成离线包和环境清单。
 9. 数据目录保持 `/app/data`，不迁移。
+10. 按 2.6 在项目里声明版本：根目录加 `mise.toml`；`sidecar/`、`web/` 的 `package.json` 写 `"engines": {"node": ">=24 <25"}` 并开启 `engine-strict`；`gateway/pyproject.toml` 写 `requires-python = ">=3.12,<3.13"`。
+11. 前端保持由对话服务同源托管（5.6），不需要引入 Nginx。

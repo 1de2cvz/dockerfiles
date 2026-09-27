@@ -1,0 +1,14 @@
+#!/bin/sh
+# 安装 Debian 包并清理索引。用法：apt-install <包>...
+# 构建时挂载了 ca_cert secret 的话，用它校验 HTTPS 源。
+set -eu
+opts=""
+if [ -s /run/secrets/ca_cert ]; then
+  opts="-o Acquire::https::CaInfo=/run/secrets/ca_cert"
+fi
+# $opts 为空或两个参数，需要按词拆分。
+# shellcheck disable=SC2086
+apt-get $opts update --error-on=any
+# shellcheck disable=SC2086
+apt-get $opts install -y --no-install-recommends "$@"
+rm -rf /var/lib/apt/lists/*
