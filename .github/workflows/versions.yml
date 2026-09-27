@@ -1,6 +1,6 @@
 name: versions
 
-# 每周检查基础镜像里各运行时的维护期：剩余不足 180 天时开一个 issue 提醒，
+# 每周检查基础镜像和前端镜像里各运行时的维护期：剩余不足 180 天时开一个 issue 提醒，
 # 情况解除后自动关闭；已经停止维护时本工作流失败。
 
 on:
@@ -10,6 +10,8 @@ on:
     paths:
       - images/base/versions.env
       - images/base/Dockerfile
+      - images/web/versions.env
+      - images/web/Dockerfile
       - scripts/check_versions.py
       - .github/workflows/versions.yml
   workflow_dispatch:

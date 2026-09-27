@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""检查基础镜像的运行时版本：
+"""检查基础镜像（images/base）和前端镜像（images/web）的运行时版本：
 
-1. 一致性：images/base/Dockerfile 里的上游镜像和 images/base/versions.env 是否一致。
+1. 一致性：各镜像 Dockerfile 里的上游镜像和同目录 versions.env 是否一致。
 2. 维护期：到 endoflife.date 查询每个运行时的停止维护日期，快到期或已到期时提醒。
 
 只用标准库。用法：
@@ -27,17 +27,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BASE = ROOT / "images" / "base"
+WEB = ROOT / "images" / "web"
 API = os.environ.get("EOL_API_BASE", "https://endoflife.date").rstrip("/")
 
 DEBIAN_CODENAMES = {"12": "bookworm", "13": "trixie", "14": "forky"}
 
 # 名称、versions.env 里的键、endoflife.date 的产品 ID、按哪个日期算到期。
 # Debian 按常规安全支持结束（eoas）算，之后的 LTS 只修部分软件包。
+# Nginx 稳定版在下一个稳定版发布时（通常是每年 4 月）停止维护，届时 endoflife.date 才给出日期。
 RUNTIMES = [
     ("Debian", "DEBIAN", "debian", "eoas"),
     ("Python", "PYTHON", "python", "eol"),
     ("Node.js", "NODE", "nodejs", "eol"),
     ("Java (Temurin)", "JAVA", "eclipse-temurin", "eol"),
+    ("Nginx", "NGINX", "nginx", "eol"),
 ]
 
 WARN_DAYS = 180
@@ -60,11 +63,34 @@ def read_dockerfile_args(path):
     return args
 
 
-def check_consistency(versions, args):
+def check_rules(image, args, rules):
+    problems = []
+    for arg, (pattern, expected) in rules.items():
+        value = args.get(arg)
+        if value is None:
+            problems.append(f"{image}/Dockerfile 缺少 `ARG {arg}`")
+        elif not re.match(pattern, value):
+            problems.append(f"{image}/Dockerfile 的 `{arg}={value}` 与 versions.env 不一致，应为 `{expected}`")
+    return problems
+
+
+def check_web(versions, args):
+    codename = DEBIAN_CODENAMES.get(versions["DEBIAN"])
+    if codename is None:
+        return [f"images/web/versions.env 的 DEBIAN={versions['DEBIAN']} 没有对应的代号，请补充 DEBIAN_CODENAMES"]
+    nginx = re.escape(versions["NGINX"])
+    rules = {
+        "NGINX_IMAGE": (rf"^nginxinc/nginx-unprivileged:{nginx}(\.\d+)?-{codename}@sha256:[0-9a-f]{{64}}$",
+                        f"nginxinc/nginx-unprivileged:{versions['NGINX']}-{codename}@sha256:..."),
+    }
+    return check_rules("images/web", args, rules)
+
+
+def check_base(versions, args):
     """返回问题列表，每项是一句说明。"""
     codename = DEBIAN_CODENAMES.get(versions["DEBIAN"])
     if codename is None:
-        return [f"versions.env 的 DEBIAN={versions['DEBIAN']} 没有对应的代号，请补充 DEBIAN_CODENAMES"]
+        return [f"images/base/versions.env 的 DEBIAN={versions['DEBIAN']} 没有对应的代号，请补充 DEBIAN_CODENAMES"]
 
     py, node, java = (re.escape(versions[k]) for k in ("PYTHON", "NODE", "JAVA"))
     digest = r"@sha256:[0-9a-f]{64}$"
@@ -80,14 +106,7 @@ def check_consistency(versions, args):
         "UV_IMAGE": (r"^[\w./-]+:\d+\.\d+\.\d+(@sha256:[0-9a-f]{64})?$",
                      "ghcr.io/astral-sh/uv:<固定版本>"),
     }
-    problems = []
-    for arg, (pattern, expected) in rules.items():
-        value = args.get(arg)
-        if value is None:
-            problems.append(f"Dockerfile 缺少 `ARG {arg}`")
-        elif not re.match(pattern, value):
-            problems.append(f"Dockerfile 的 `{arg}={value}` 与 versions.env 不一致，应为 `{expected}`")
-    return problems
+    return check_rules("images/base", args, rules)
 
 
 def fetch_json(url):
@@ -126,6 +145,8 @@ def fetch_release(product, cycle):
 def check_eol(versions, today):
     rows = []
     for name, key, product, field in RUNTIMES:
+        if key not in versions:
+            continue
         cycle = versions[key]
         row = {"name": name, "cycle": cycle, "field": field, "date": None, "days": None,
                "latest": None, "status": "unknown", "error": None}
@@ -149,11 +170,11 @@ STATUS_TEXT = {"ok": "✅ 正常", "warn": "⚠️ 即将到期", "expired": "�
 
 
 def render(problems, rows, today):
-    lines = [f"## 基础镜像运行时版本（{today}）", ""]
+    lines = [f"## 镜像运行时版本（{today}）", ""]
     if problems:
         lines += ["### ❌ 版本不一致", ""] + [f"- {p}" for p in problems] + [""]
     else:
-        lines += ["✅ Dockerfile 与 versions.env 一致。", ""]
+        lines += ["✅ 各镜像的 Dockerfile 与 versions.env 一致。", ""]
     if rows is not None:
         lines += [
             "| 运行时 | 主版本 | 停止维护 | 剩余天数 | 最新补丁 | 状态 |",
@@ -190,9 +211,14 @@ def main():
     parser.add_argument("--today", type=dt.date.fromisoformat, default=dt.date.today(), help=argparse.SUPPRESS)
     opts = parser.parse_args()
 
-    versions = read_env(BASE / "versions.env")
-    problems = check_consistency(versions, read_dockerfile_args(BASE / "Dockerfile"))
-    rows = None if opts.offline else check_eol(versions, opts.today)
+    base = read_env(BASE / "versions.env")
+    web = read_env(WEB / "versions.env")
+    problems = check_base(base, read_dockerfile_args(BASE / "Dockerfile"))
+    problems += check_web(web, read_dockerfile_args(WEB / "Dockerfile"))
+    if web["DEBIAN"] != base["DEBIAN"]:
+        problems.append(f"images/web 的 DEBIAN={web['DEBIAN']} 与 images/base 的 DEBIAN={base['DEBIAN']} 不一致")
+    # Debian 两边相同，合并后每个运行时只查一次。
+    rows = None if opts.offline else check_eol({**base, **web}, opts.today)
 
     report = render(problems, rows, opts.today)
     print(report)

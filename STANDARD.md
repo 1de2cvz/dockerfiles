@@ -22,7 +22,7 @@
 
 ## 2. 基础镜像
 
-所有项目共用一个基础镜像 [`images/base`](images/base/README.md)：Python 3.12 + Node.js 24，Debian 13 (trixie)，另有带 Java 8 的变体。环境只维护这一套，每个项目在上面加自己的依赖和代码，仍然各自发布独立的镜像。
+所有项目共用一个基础镜像 [`images/base`](images/base/README.md)（纯前端项目的最终阶段例外，用 [`images/web`](images/web/README.md)，见 5.6）：Python 3.12 + Node.js 24，Debian 13 (trixie)，另有带 Java 8 的变体。环境只维护这一套，每个项目在上面加自己的依赖和代码，仍然各自发布独立的镜像。
 
 1. 【必须】项目的构建阶段和最终阶段都基于共享基础镜像，不直接使用 `python:*`、`node:*`、`eclipse-temurin:*` 等官方镜像。按是否用到 Java 选变体：
 
@@ -52,8 +52,9 @@
    | Python | 3.12 | 2028-10-31 | 2028 年上半年评估 3.14 |
    | Node.js | 24 LTS | 2028-04-30 | Node 26 于 2026-10-28 进入 LTS，2027 年评估 |
    | Java | 8（Eclipse Temurin） | 2030-12-31 | 由用到 Java 的项目决定是否升到 17 / 21 |
+   | Nginx（前端镜像） | 1.30 稳定版 | 下一个稳定版发布时（约 2027 年 4 月） | 届时换 1.32 |
 
-   日期来自 endoflife.date，以第 5 条的自动检查结果为准；本表只在升级时手工更新。
+   日期来自 endoflife.date，以第 5 条的自动检查结果为准；本表只在升级时手工更新。Nginx 的版本在 [`images/web/versions.env`](images/web/versions.env)，同样纳入检查。
 5. 【必须】版本维护靠自动检查，不靠人记：
    - `scripts/check_versions.py` 核对 Dockerfile 里的上游镜像与 `versions.env` 一致，并查询每个运行时的停止维护日期。
    - 基础镜像的 CI 在每个 PR 上做一致性检查，不一致就失败。
@@ -104,7 +105,7 @@
 1. 【必须】应用进程不以 root 运行。
    - 单进程镜像：用 `USER` 指令切换用户。
    - 多进程镜像：root 只用于启动脚本修正数据卷属主，然后用 `setpriv` 降权启动各进程。
-2. 【必须】UID/GID 固定且 ≥ 10000。不使用 1000，它通常就是宿主机上的第一个普通用户，挂载宿主机目录时属主会混淆。
+2. 【必须】UID/GID 固定且 ≥ 10000（例外：前端镜像 `web` 沿用官方 Nginx 的 uid 101，它没有数据卷，不涉及属主问题）。不使用 1000，它通常就是宿主机上的第一个普通用户，挂载宿主机目录时属主会混淆。
 3. 【必须】UID 按角色统一登记，新角色在此表追加。基础镜像已创建 `app`，其他用户由项目按此表创建：
 
    | UID/GID | 用户名 | 角色 |
@@ -161,10 +162,11 @@
    | 情况 | 做法 |
    |---|---|
    | 前端和某个后端同属一个产品 | 由后端同源托管静态文件（`agent-runtime` 的做法），不需要 Nginx |
-   | 独立的纯前端项目 | 单独一个镜像，基于官方 `nginxinc/nginx-unprivileged`（非 root，固定 digest），只放静态文件和站点配置 |
+   | 独立的纯前端项目 | 单独一个镜像：构建阶段用 `base:*-build` 编译，最终阶段 `FROM ghcr.io/1de2cvz/web:nginx1.30`，只复制编译结果。见 [`images/web`](images/web/README.md) 和 [`templates/static-site.Dockerfile`](templates/static-site.Dockerfile) |
    | HTTPS、域名、多服务按路径转发 | 部署层统一一个反向代理（Nginx 或 Caddy），单独一个容器，放在 compose 里，不放进应用镜像 |
 
 3. 【必须】页面只从同源加载脚本和字体，不引用外部 CDN，保证内网可用。
+4. 【必须】纯前端镜像按环境变化的配置（接口地址等）用 `WEB_PUBLIC_*` 环境变量传入，页面从 `/config.js` 读取，不在构建时写死，保证同一个镜像能部署到各个环境。这些值会发给浏览器，不能放密钥。
 
 ### 5.7 Java 进程
 

@@ -25,12 +25,27 @@
       "enabled": false
     },
     {
-      "description": "基础镜像的补丁版本和 digest 放在一个 PR 里",
+      "description": "前端镜像的 Nginx 只自动升级补丁版本和 digest；换稳定版（如 1.30 → 1.32）改 images/web/versions.env",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchDepNames": [
+        "nginxinc/nginx-unprivileged"
+      ],
+      "matchUpdateTypes": [
+        "major",
+        "minor"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "基础镜像、前端镜像的补丁版本和 digest 放在一个 PR 里",
       "matchDatasources": [
         "docker"
       ],
       "matchFileNames": [
-        "images/base/**"
+        "images/base/**",
+        "images/web/**"
       ],
       "groupName": "base image"
     },
