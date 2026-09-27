@@ -1,25 +1,44 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
+  "extends": [
+    "config:recommended"
+  ],
   "timezone": "Asia/Shanghai",
-  "schedule": ["before 9am on monday"],
+  "schedule": [
+    "before 9am on monday"
+  ],
   "packageRules": [
     {
-      "description": "基础镜像的 Python / Node 只自动升级补丁版本和 digest；主、次版本由人决定，所有项目一起升",
-      "matchDatasources": ["docker"],
-      "matchDepNames": ["python", "node"],
-      "matchUpdateTypes": ["major", "minor"],
+      "description": "基础镜像的 Python / Node / Java 只自动升级补丁版本和 digest；主、次版本由人决定（改 images/base/versions.env），所有项目一起升",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchDepNames": [
+        "python",
+        "node",
+        "eclipse-temurin"
+      ],
+      "matchUpdateTypes": [
+        "major",
+        "minor"
+      ],
       "enabled": false
     },
     {
       "description": "基础镜像的补丁版本和 digest 放在一个 PR 里",
-      "matchDatasources": ["docker"],
-      "matchFileNames": ["images/base/**"],
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchFileNames": [
+        "images/base/**"
+      ],
       "groupName": "base image"
     },
     {
       "description": "GitHub Actions 升级合成一个 PR",
-      "matchManagers": ["github-actions"],
+      "matchManagers": [
+        "github-actions"
+      ],
       "groupName": "github actions"
     }
   ]

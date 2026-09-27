@@ -22,24 +22,53 @@
 
 ## 2. 基础镜像
 
-所有项目共用一个基础镜像 [`images/base`](images/base/README.md)：Python 3.12 + Node.js 24，Debian 13 (trixie)。环境只维护这一套，每个项目在上面加自己的依赖和代码，仍然各自发布独立的镜像。
+所有项目共用一个基础镜像 [`images/base`](images/base/README.md)：Python 3.12 + Node.js 24，Debian 13 (trixie)，另有带 Java 8 的变体。环境只维护这一套，每个项目在上面加自己的依赖和代码，仍然各自发布独立的镜像。
 
-1. 【必须】项目的构建阶段 `FROM ghcr.io/1de2cvz/base:py3.12-node24-build`，最终阶段 `FROM ghcr.io/1de2cvz/base:py3.12-node24`，不直接使用 `python:*`、`node:*` 等官方镜像。两者都通过构建参数暴露，方便换成内网镜像仓库地址，并固定到 digest，由 Renovate 升级：
+1. 【必须】项目的构建阶段和最终阶段都基于共享基础镜像，不直接使用 `python:*`、`node:*`、`eclipse-temurin:*` 等官方镜像。按是否用到 Java 选变体：
+
+   | 项目 | 构建阶段 | 最终阶段 |
+   |---|---|---|
+   | 不用 Java | `base:py3.12-node24-build` | `base:py3.12-node24` |
+   | 用 Java | `base:py3.12-node24-java8-build`（JDK） | `base:py3.12-node24-java8`（JRE） |
+
+   Java 单独做成变体，是因为 JRE 8 约 106 MB，不用 Java 的项目不应该背这个体积和漏洞面。基础镜像都通过构建参数引用，固定到 digest，由 Renovate 升级：
 
    ```dockerfile
    ARG BUILD_IMAGE=ghcr.io/1de2cvz/base:py3.12-node24-build@sha256:<digest>
    ARG RUNTIME_IMAGE=ghcr.io/1de2cvz/base:py3.12-node24@sha256:<digest>
    ```
 
-2. 【必须】项目需要的系统包、运行时版本和基础镜像不同时，先提出来讨论能不能加进基础镜像，不在项目里另起一套环境。确实只有一个项目需要的系统包，可以在项目的最终阶段 `apt-get install`。
+2. 【必须】项目需要的系统包、运行时版本和基础镜像不同时，先提出来讨论能不能加进基础镜像，不在项目里另起一套环境。确实只有一个项目需要的系统包，在项目的最终阶段用基础镜像自带的 `apt-install <包>` 安装（自动处理内网 CA 证书、清理索引）。
 3. 基础镜像自身遵守以下规则（维护 `images/base` 时适用）：
    - 上游镜像标签写明 Debian 代号，例如 `python:3.12-slim-trixie`，不写 `python:3.12-slim`。不带代号的标签会随上游切换 Debian 大版本，glibc 和系统库会悄悄变掉。
-   - 统一使用 **Debian 13 (trixie)**。Debian 12 (bookworm) 已于 2026 年 6 月结束官方安全支持，转入 LTS 维护。
+   - 统一使用 **Debian 13 (trixie)**。Debian 12 (bookworm) 已于 2026-07-11 结束常规安全支持，转入 LTS 维护。
    - 上游镜像固定到 digest。补丁版本和 digest 由 Renovate 自动提 PR，CI 检查通过后合并。
-   - 所有构建阶段使用同一个 Debian 代号。从别的镜像拷贝可执行文件时（例如从 Node 镜像拷 `node`），来源的代号必须和目标一致，否则可能因为 glibc 版本不同而无法运行。
-4. 【必须】语言运行时的主版本：**Python 3.12**、**Node.js 24 LTS**（维护到 2028-04-30）。
-   - 升级 Python 或 Node 的主、次版本时，基础镜像发布新的环境标签（例如 `py3.12-node26`），旧标签保留，同时给出各项目的切换期限；期限过后旧标签停止更新。
-   - Node 26 于 2026 年 10 月进入 LTS，计划在 2027 年评估升级。
+   - 所有构建阶段使用同一个 Debian 代号。从别的镜像拷贝可执行文件时（例如从 Node 镜像拷 `node`），来源的代号必须和目标一致，否则可能因为 glibc 版本不同而无法运行。例外：Temurin 的 JDK/JRE 是与发行版无关的通用构建，可以从任意 Temurin 镜像拷贝。
+4. 【必须】运行时主版本以 [`images/base/versions.env`](images/base/versions.env) 为唯一来源，当前为：
+
+   | 运行时 | 主版本 | 停止维护 | 下一步 |
+   |---|---|---|---|
+   | Debian | 13 (trixie) | 常规安全支持到 2028-08-09，LTS 到 2030-06-30 | — |
+   | Python | 3.12 | 2028-10-31 | 2028 年上半年评估 3.14 |
+   | Node.js | 24 LTS | 2028-04-30 | Node 26 于 2026-10-28 进入 LTS，2027 年评估 |
+   | Java | 8（Eclipse Temurin） | 2030-12-31 | 由用到 Java 的项目决定是否升到 17 / 21 |
+
+   日期来自 endoflife.date，以第 5 条的自动检查结果为准；本表只在升级时手工更新。
+5. 【必须】版本维护靠自动检查，不靠人记：
+   - `scripts/check_versions.py` 核对 Dockerfile 里的上游镜像与 `versions.env` 一致，并查询每个运行时的停止维护日期。
+   - 基础镜像的 CI 在每个 PR 上做一致性检查，不一致就失败。
+   - `versions` 工作流每周一运行：剩余不足 180 天时自动开 issue「运行时版本需要升级」，情况解除后自动关闭；已经停止维护时工作流失败。
+   - 升级主版本的步骤：改 `versions.env` → 改 Dockerfile 的上游镜像 → CI 通过后发布新的环境标签（例如 `py3.12-node26`）。旧标签保留，同时给出各项目的切换期限；期限过后旧标签停止更新。
+6. 【必须】项目在代码里声明运行时版本，让本地开发、IDE 和 CI 在版本不对时尽早报错，而不是等到构建镜像：
+
+   | 运行时 | 在项目里声明 |
+   |---|---|
+   | 全部 | 根目录放 [`mise.toml`](templates/mise.toml)，本地用 mise 自动切换到相同的主版本 |
+   | Python | `pyproject.toml`：`requires-python = ">=3.12,<3.13"` |
+   | Node | `package.json`：`"engines": {"node": ">=24 <25"}`，并在 `.npmrc` 写 `engine-strict=true` |
+   | Java | Maven：`maven.compiler.source` / `target` 设为 `1.8`；Gradle：`sourceCompatibility = 1.8` |
+
+   基础镜像升级主版本时，以上声明随切换一起修改。
 
 ## 3. 构建
 
@@ -124,6 +153,25 @@
 
 6. 【必须】日志输出到 stdout/stderr，不写日志文件。
 
+### 5.6 前端静态文件与 Nginx
+
+1. 【必须】共享基础镜像和应用镜像里不装 Nginx。
+2. 【必须】前端页面在构建阶段编译成静态文件，运行时不跑 Vite、webpack 等开发服务器。按部署方式选择：
+
+   | 情况 | 做法 |
+   |---|---|
+   | 前端和某个后端同属一个产品 | 由后端同源托管静态文件（`agent-runtime` 的做法），不需要 Nginx |
+   | 独立的纯前端项目 | 单独一个镜像，基于官方 `nginxinc/nginx-unprivileged`（非 root，固定 digest），只放静态文件和站点配置 |
+   | HTTPS、域名、多服务按路径转发 | 部署层统一一个反向代理（Nginx 或 Caddy），单独一个容器，放在 compose 里，不放进应用镜像 |
+
+3. 【必须】页面只从同源加载脚本和字体，不引用外部 CDN，保证内网可用。
+
+### 5.7 Java 进程
+
+1. 【必须】设置 `-XX:MaxRAMPercentage=75.0`。JVM 默认只用容器内存限制的 1/4 作为最大堆，浪费内存，也容易误判为内存不足。
+2. 【建议】用 `JAVA_OPTS` 之类的环境变量传入 JVM 参数，不写死在启动命令里。不要用 `JAVA_TOOL_OPTIONS`：它会让每次启动 JVM 都在日志里打印一行提示。
+3. 【必须】需要显示或生成中文（图片、PDF、Excel 等）的项目自行安装中文字体：`apt-install fonts-noto-cjk`。基础镜像只带 DejaVu 字体。
+
 ## 6. 安全
 
 1. 【必须】CI 用 Trivy 扫描最终镜像：存在已有修复版本的 CRITICAL 漏洞时构建失败；HIGH 漏洞列入报告，一周内处理。
@@ -193,7 +241,7 @@
 | 2.1 使用共享基础镜像 | ❌ `python:3.12-slim` | ❌ `python:3.12-slim-bookworm` + `node:22-bookworm-slim` |
 | 2.1 基础镜像固定 digest | ❌ | ❌ |
 | 2.1 基础镜像可替换 | ✅ `PYTHON_IMAGE` | ❌ |
-| 2.4 Node 24 | —（不用 Node） | ❌ Node 22 |
+| 2.4 运行时主版本（Node 24） | —（不用 Node） | ❌ Node 22 |
 | 3.1 多阶段构建 | ✅ | ✅ |
 | 3.4 内网构建参数、CA 证书 | ✅ | ❌ |
 | 3.5 使用基础镜像的 uv / npm | —（未用 uv） | ❌ `pip install uv` |
@@ -208,6 +256,7 @@
 | 7.3 `latest` 只指正式版 | ⚠️ | ❌ `latest` 指向 `main` |
 | 7.2 CI 推送到 ghcr.io | ❌ 本地脚本构建 | ✅ |
 | 7.5 CI 生成离线包 | ❌ 本地脚本导出 | ❌ |
+| 2.6 在项目里声明运行时版本 | 未知 | 未知 |
 | 8.3 CI 冒烟测试 | ⚠️ 有 `smoke_test.py`，未接入 CI | ✅ `check_allinone.ts` |
 
 ### 10.2 doc-vector 整改
@@ -219,6 +268,7 @@
    - 注意：基础镜像含 Node（约 121 MB），`doc-vector` 用不到，换基础镜像后体积会相应增加。这是统一环境的代价；如果离线包大小敏感，先完成上一步的体积排查。
 5. 接入可复用 workflow：推送 ghcr.io、生成离线包；`scripts/smoke_test.py` 作为冒烟测试接入 CI。`scripts/build_image.sh` 保留给本地和内网构建用。
 6. 确认 `milvus-lite`、`pymupdf` 有 arm64 wheel，再决定是否开启 arm64。
+7. 按 2.6 在项目里声明版本：根目录加 `mise.toml`，`pyproject.toml` 写 `requires-python = ">=3.12,<3.13"`。
 
 ### 10.3 agent-runtime 整改
 
@@ -231,3 +281,5 @@
 7. 引入语义化版本和 tag 发布；`latest` 改为只指正式版本。
 8. 接入可复用 workflow，打 tag 时生成离线包和环境清单。
 9. 数据目录保持 `/app/data`，不迁移。
+10. 按 2.6 在项目里声明版本：根目录加 `mise.toml`；`sidecar/`、`web/` 的 `package.json` 写 `"engines": {"node": ">=24 <25"}` 并开启 `engine-strict`；`gateway/pyproject.toml` 写 `requires-python = ">=3.12,<3.13"`。
+11. 前端保持由对话服务同源托管（5.6），不需要引入 Nginx。

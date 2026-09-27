@@ -1,0 +1,9 @@
+# 放在项目根目录：本地开发用的运行时主版本，与基础镜像 images/base/versions.env 保持一致。
+# 安装 mise（https://mise.jdx.dev）后，在项目目录执行 `mise install`，进入目录时自动切换到这些版本。
+# 基础镜像升级主版本时，同步修改这里。
+
+[tools]
+python = "3.12"
+node = "24"
+# 用到 Java 的项目取消注释。版本名解析不到时，用 `mise ls-remote java | grep temurin-8` 查可用名称。
+# java = "temurin-8"
