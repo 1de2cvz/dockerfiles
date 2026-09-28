@@ -47,6 +47,7 @@ docker compose version    # v2
 uname -m                  # x86_64；GHCR 上的镜像只有 amd64
 df -h /var/lib/docker     # 建议剩余 10GB 以上
 java -version             # 1.8，运行 Java 用
+umask                     # 应为 0022；是 0077 的话先执行 umask 022，否则拉下来的代码只有 root 能读，容器和 nginx 读不到
 ```
 
 - 服务器要能访问 `https://api.siliconflow.cn`、`https://ghcr.io`、`https://github.com`。
@@ -69,8 +70,9 @@ echo '<GitHub 令牌>' | docker login ghcr.io -u 1de2cvz --password-stdin
 所有密钥集中放在服务器的 `~/deploy-secrets.env` 里，后面每一步都从这里读取，不用来回复制。硅基流动的 Key 请用**新建的**，之前在对话里发过的那个先作废。
 
 ```bash
-umask 077
 read -rsp "粘贴硅基流动 API Key 后回车（不显示）: " SF; echo
+# umask 077 只放在括号里（子 shell），不影响当前终端之后的操作
+( umask 077
 cat > ~/deploy-secrets.env <<EOF
 SF_KEY=$SF
 DV_KEY=$(openssl rand -hex 32)
@@ -81,6 +83,7 @@ TEST_TOKEN=$(openssl rand -hex 32)
 PLATFORM_TOKEN=$(openssl rand -hex 32)
 ADMIN_TOKEN=$(openssl rand -hex 32)
 EOF
+)
 unset SF
 chmod 600 ~/deploy-secrets.env
 cat ~/deploy-secrets.env | cut -d= -f1      # 只看名字，确认 8 项都在
@@ -112,7 +115,7 @@ cat ~/deploy-secrets.env | cut -d= -f1      # 只看名字，确认 8 项都在
 git clone https://github.com/1de2cvz/doc-vector.git ~/doc-vector
 cd ~/doc-vector && git checkout main
 . ~/deploy-secrets.env
-umask 077
+( umask 077
 cat > .env <<EOF
 API_KEY=${DV_KEY}
 LOG_LEVEL=INFO
@@ -131,6 +134,7 @@ IMAGE_TAG=1.0.0
 HOST_PORT=127.0.0.1:8000
 WORKERS=1
 EOF
+)
 ```
 
 - `HOST_PORT=127.0.0.1:8000` 表示只让本机访问。**【分机】** Java 在别的机器上时改成 `8000`，并用安全组只放行 Java 服务器。
@@ -297,7 +301,7 @@ curl -s http://127.0.0.1:9448/rest/kb/vector/rebuild/status; echo
 ```bash
 mkdir -p ~/agent-runtime && cd ~/agent-runtime
 . ~/deploy-secrets.env
-umask 077
+( umask 077
 cat > .env <<EOF
 GATEWAY_UPSTREAM_KEY=${SF_KEY}
 GATEWAY_UPSTREAM_BASE=https://api.siliconflow.cn/v1
@@ -313,6 +317,7 @@ TOOL_HTTP_ALLOWED_ORIGINS=http://host.docker.internal:9448
 TOOL_API_TOKEN=${AGENT_TOOL_TOKEN}
 TOOL_CREDENTIAL_ALLOWLIST=TOOL_API_TOKEN
 EOF
+)
 ```
 
 - 硅基流动的地址要带 `/v1`：网关会在后面拼 `/chat/completions`。doc-vector 那边不带。
@@ -390,7 +395,7 @@ docker run --rm -v "$PWD/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro" n
 
 ### 5.2 打包
 
-在能访问私有 npm 源的机器上：
+在能访问私有 npm 源的机器上（`umask` 要是 0022，否则 dist 里的文件 nginx 读不到，页面 403）：
 
 ```bash
 cd ~/pangpt && git checkout main && git pull
@@ -442,6 +447,8 @@ pnpm build          # 产物在 dist/
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
 | `docker compose up --build` 拉不到 `ghcr.io/1de2cvz/base` | 没登录 GHCR，或令牌没有 `read:packages` | 重做 1.2 |
+| doc-vector 一直 Restarting，日志里有 `PermissionError: ... /app/app/__init__.py` | 代码是在 `umask 077` 下检出的，文件只有 root 能读 | `chmod -R a+rX app scripts` 后重新 `docker compose up -d --build`；doc-vector #6 合并后，镜像构建时会自动修正权限 |
+| 构建报 `no space left on device` | Docker 数据目录（默认 `/var/lib/docker`，在系统盘上）空间不够 | `docker builder prune -f`、`docker image prune -f`；仍不够就把 Docker 的 `data-root` 挪到数据盘 |
 | doc-vector `health/ready` 返回 503 | 硅基流动 Key 错误或网络不通 | 看 `data` 里哪一项是 false，在服务器上 `curl https://api.siliconflow.cn` 试一下 |
 | Java 报「文档向量服务未配置：doc-vector.base-url」 | 没有设 `DOC_VECTOR_BASE_URL` | 补上后重启 Java |
 | Java 报 `UNAUTHORIZED`（调 doc-vector 时） | `DOC_VECTOR_API_KEY` 与 doc-vector 的 `API_KEY` 不一致 | 改成同一个值 |
