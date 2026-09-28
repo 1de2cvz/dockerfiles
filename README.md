@@ -6,6 +6,7 @@
 |---|---|
 | [`STANDARD.md`](STANDARD.md) | 容器镜像规范 |
 | [`docs/deploy-knowledge-agent.md`](docs/deploy-knowledge-agent.md) | 知识库与 Agent 服务（doc-vector、digital-employee、AgentRuntime、pangpt）部署手册 |
+| [`docs/deploy-offline.md`](docs/deploy-offline.md) | 同上，正式环境（离线、使用内网模型 API）的部署手册 |
 | [`images/base/`](images/base/README.md) | 共享基础镜像：Python 3.12 + Node.js 24，Debian 13；另有 Java 8 变体 |
 | [`images/web/`](images/web/README.md) | 纯前端项目的镜像：非 root Nginx，只放静态文件 |
 | `images/*/versions.env` | 各镜像运行时主版本的唯一来源 |
