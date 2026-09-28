@@ -103,6 +103,7 @@ cp ~/pangpt-image.tar.gz .      # 1.2 生成的；pangpt 在别的机器上打�
 # 其余文件
 cp ~/doc-vector/docker-compose.yml doc-vector-compose.yml
 cp /opt/digital-employee/digital-employee-1.0.0.jar .      # 换成实际路径
+cp ~/digital-employee/sql/oracle/01_schema.sql .            # 正式库还没建表时要用
 
 sha256sum * > SHA256SUMS
 ls -lh
@@ -114,7 +115,7 @@ ls -lh
   - compose 插件：GitHub `docker/compose` 的 Releases；
   - JDK 8：用你们常用的发行版。
 
-- [ ] 导出目录里有 2 个镜像包、compose 文件、jar、`SHA256SUMS`
+- [ ] 导出目录里有 2 个镜像包、compose 文件、jar、建表脚本、`SHA256SUMS`
 
 ---
 
@@ -339,6 +340,8 @@ sudo vi /etc/digital-employee.env      # 填上正式环境的数据库、FastDF
 
 这个文件每行一个 `变量=值`，行尾不能写注释。
 
+正式库还没有建表的话，先执行 digital-employee 仓库的 `sql/oracle/01_schema.sql`（见部署手册 3.2，要在 1.3 导出时一起带过来）。**不要执行 `02_external_tables_dev.sql`**：正式环境的用户表等外部表由现有的主数据、数仓提供。
+
 ### 7.2 启动
 
 ```bash
@@ -362,11 +365,10 @@ journalctl -u digital-employee -f      # 看到 Started DigitalEmployeeApplicati
 ```
 
 - `-Xmx` 按内存大小调整。不设的话，JVM 默认最多占物理内存的 1/4，还要给 Docker 里的服务留出内存。
-- 正式环境原来已经有 Java 进程在跑的话，先把旧 jar 和旧配置备份好，再停掉旧进程。
 
 ### 7.3 防火墙
 
-9448 端口只放行 pangpt 所在的 k8s 节点和 Docker 网桥（AgentRuntime 回调 kb_search 要用）。旧接口直接信任请求里的 `userId`，这个端口不能对其他机器开放。以 firewalld 为例：
+9448 端口只放行 pangpt 所在的 k8s 节点和 Docker 网桥（AgentRuntime 回调 kb_search 要用）。现有的业务接口直接信任请求里的 `userId`，这个端口不能对其他机器开放。以 firewalld 为例：
 
 ```bash
 sudo firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=<k8s 节点网段> port port=9448 protocol=tcp accept'
@@ -548,10 +550,9 @@ docker tag pangpt:prod-<日期> <正式镜像仓库>/<项目>/pangpt:prod-<日�
 docker push <正式镜像仓库>/<项目>/pangpt:prod-<日期>
 ```
 
-然后按正式环境原来的方式发布：把 k8s 部署文件里的镜像地址改成上面推送的这个，再 `kubectl apply`。
+然后按正式环境的 k8s 发布流程：把 k8s 部署文件里的镜像地址改成上面推送的这个，再 `kubectl apply`。
 
 - 前面如果还有一层网关或负载均衡，也要关闭对 `/rest/agent/` 的缓冲，否则回答会最后才一次性出现。
-- 升级前就登录过的用户本地没有令牌，第一次提问会被带到登录页，重新登录即可。
 
 - [ ] 页面正常
 
@@ -575,11 +576,11 @@ docker push <正式镜像仓库>/<项目>/pangpt:prod-<日期>
 
 ## 12. 以后怎么升级
 
-原则和联网环境一样（见[部署手册](deploy-knowledge-agent.md)第 8 章）：compose 文件不改，只改 `.env` 里的版本号；数据在数据卷里，升级不受影响。区别只在于新镜像要从开发环境带过来。
+原则和联网环境一样（见[部署手册](deploy-knowledge-agent.md)第 7 章）：compose 文件不改，只改 `.env` 里的版本号；数据在数据卷里，升级不受影响。区别只在于新镜像要从开发环境带过来。
 
 ### 12.1 开发环境：升级、验证、导出
 
-1. 代码合并到 main 后，CI 会发布新镜像，标签是 `sha-<提交号>`。先在开发环境按部署手册第 8 章升级并验证通过。
+1. 代码合并到 main 后，CI 会发布新镜像，标签是 `sha-<提交号>`。先在开发环境按部署手册第 7 章升级并验证通过。
 2. 导出有变化的镜像，连同校验文件一起带走：
 
    ```bash
@@ -627,7 +628,7 @@ docker compose up -d
 - doc-vector：`IMAGE_TAG` 改回旧值，执行 `docker compose up -d --no-build`。想把 `.env` 也完全还原，就用 `.env.bak.<时间>` 覆盖。
 - AgentRuntime：`TAG` 改回旧值，执行 `docker compose up -d`。
 - Java：换回旧 jar，然后重启。
-- 旧镜像不要急着 `docker rmi`，回滚时要用。数据格式有变化、改回旧版本号也起不来时，用附录 B 的备份恢复数据卷，做法同部署手册 8.6。
+- 旧镜像不要急着 `docker rmi`，回滚时要用。数据格式有变化、改回旧版本号也起不来时，用附录 B 的备份恢复数据卷，做法同部署手册 7.6。
 
 ---
 
