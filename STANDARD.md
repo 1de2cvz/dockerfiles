@@ -266,8 +266,8 @@
 1. 构建阶段改为 `FROM` 基础镜像的 build 变体，用 `uv sync --frozen --no-dev` 安装到 `/opt/venv`，删除 `requirements.txt` 中转；最终阶段 `FROM` runtime 变体。可直接参照 [`templates/python-service.Dockerfile`](templates/python-service.Dockerfile)。
 2. 删除 Dockerfile 里自己设置的时区、字符集、`app` 用户，改用基础镜像提供的（UID 同为 10001，数据卷不受影响）。
 3. 版本号以 git tag 为准，CI 校验 `app/__init__.py` 与 tag 一致。
-4. 查清镜像体积：解压后 933 MB，其中 venv 546 MB，剩余约 390 MB 明显多于基础镜像本身。用 `docker history doc-vector:1.0.0` 找出大的层，重点检查有没有 `RUN chown -R` 造成的重复层（第 3.2 条）。
-   - 注意：基础镜像含 Node（约 121 MB），`doc-vector` 用不到，换基础镜像后体积会相应增加。这是统一环境的代价；如果离线包大小敏感，先完成上一步的体积排查。
+4. 镜像体积：实际约 670 MB（venv 546 MB + 系统层）。之前记录的「933 MB、其中约 390 MB 来源不明」是 containerd 镜像存储的统计口径造成的（把压缩层和解压内容都算进去了），不是重复层；`docker history` 里也没有 `RUN chown -R` 之类的重复层。
+   - 注意：基础镜像含 Node（约 121 MB），`doc-vector` 用不到，换基础镜像后体积会相应增加。这是统一环境的代价。
 5. 接入可复用 workflow：推送 ghcr.io、生成离线包；`scripts/smoke_test.py` 作为冒烟测试接入 CI。`scripts/build_image.sh` 保留给本地和内网构建用。
 6. 确认 `milvus-lite`、`pymupdf` 有 arm64 wheel，再决定是否开启 arm64。
 7. 按 2.6 在项目里声明版本：根目录加 `mise.toml`，`pyproject.toml` 写 `requires-python = ">=3.12,<3.13"`。
