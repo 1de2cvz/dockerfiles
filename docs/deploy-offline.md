@@ -12,8 +12,8 @@
 
 | 服务 | 交付物 | 里面已经有 | 正式环境另外需要 |
 | --- | --- | --- | --- |
-| doc-vector | 镜像 `doc-vector:1.0.0` | Python 代码、全部依赖、Milvus Lite | `docker-compose.yml`、`.env` |
-| AgentRuntime | 镜像 `ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc` | 对话服务、模型网关、对话页、默认注册中心（Agent 和 kb_search 工具定义；第一次启动时拷进数据卷） | `.env` |
+| doc-vector | 镜像 `ghcr.io/1de2cvz/doc-vector:sha-8a8bda2`（CI 构建） | Python 代码、全部依赖、Milvus Lite | `docker-compose.yml`、`.env` |
+| AgentRuntime | 镜像 `ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc`（CI 构建） | 对话服务、模型网关、对话页、默认注册中心（Agent 和 kb_search 工具定义；第一次启动时拷进数据卷） | `compose.yaml`（9.2 现写）、`.env` |
 | digital-employee（Java） | `digital-employee-1.0.0.jar`（不是镜像） | 编译好的代码和全部依赖（Spring Boot fat jar） | JDK 8、`/etc/digital-employee.env`、systemd 服务文件 |
 | pangpt | 镜像 | 打包好的前端页面、nginx 配置 | 正式环境的镜像仓库和 k8s |
 
@@ -23,7 +23,7 @@
 - 数据不迁移：
   - 向量在正式环境从正式库重新生成（第 8 步）。开发环境的向量对应的是开发库的切片，两边对不上。
   - 开发环境的会话是测试数据，也不带。
-- 以后升级也走同一条路：开发环境构建 → 导出 → 摆渡 → 正式环境导入。**正式环境不做构建。**
+- 以后升级也走同一条路：CI 构建镜像 → 开发环境拉取、验证 → 导出 → 摆渡 → 正式环境导入。**正式环境不做构建。**
 
 部署后的结构与联网环境相同，只是三个模型改成了内网 API：
 
@@ -47,26 +47,18 @@
 
 在开发服务器上操作。
 
-### 1.1 确认镜像和 jar
+### 1.1 拉取镜像，确认 jar
 
-镜像和 jar 用你在开发环境验证通过的版本。
+镜像由 CI 构建，开发服务器只负责拉取。镜像标签就是构建它的提交号，一眼能看出版本。
 
 ```bash
-docker images | grep -E 'doc-vector|agent-runtime'
-# 应有 doc-vector:1.0.0、ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc
+docker login ghcr.io -u 1de2cvz       # 令牌需要 read:packages 权限，见部署手册 1.2；登录过就跳过
+docker pull ghcr.io/1de2cvz/doc-vector:sha-8a8bda2
+docker pull ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc
 ls -l /opt/digital-employee/digital-employee-1.0.0.jar     # 换成你实际放 jar 的路径
 ```
 
-- 缺 AgentRuntime 镜像：先 `docker pull ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc`（要登录 GHCR，见部署手册 1.2）。
-- 缺 doc-vector 镜像：`cd ~/doc-vector && docker compose build`。
-- 代码是在构建镜像时拷进去的，之后 `git pull` 不会改变镜像。doc-vector 的标签 `1.0.0` 是手写的，看不出是哪个提交构建的，导出前先核对一下：
-
-  ```bash
-  docker image inspect doc-vector:1.0.0 --format '{{.Created}}'   # 镜像构建时间
-  git -C ~/doc-vector log -1 --format='%h %ci'                     # 当前代码的提交和时间
-  ```
-
-  如果镜像构建时间早于最后一次提交，说明镜像里是旧代码，要先重新构建再导出。
+- 用开发环境验证通过的那两个标签。doc-vector 的标签在它的 `.env`（`IMAGE_TAG`）里能看到。
 - 缺 jar：见部署手册 3.1。服务器上没有 Maven 时，可以用容器打包：
 
   ```bash
@@ -105,7 +97,7 @@ git checkout nginx/default.conf        # 恢复开发环境的配置，正式地
 OUT=~/offline-$(date +%Y%m%d) && mkdir -p "$OUT" && cd "$OUT"
 
 # 镜像：docker save 会带上基础镜像的所有层，正式环境不需要再拉
-docker save doc-vector:1.0.0 ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc | gzip > server-images.tar.gz
+docker save ghcr.io/1de2cvz/doc-vector:sha-8a8bda2 ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc | gzip > server-images.tar.gz
 cp ~/pangpt-image.tar.gz .      # 1.2 生成的；pangpt 在别的机器上打包的话，从那里拷过来
 
 # 其余文件
@@ -282,7 +274,8 @@ RERANK_BASE_URL=${RR_BASE}
 RERANK_MODEL=${RR_MODEL}
 RERANK_API_KEY=${RR_KEY}
 UPSTREAM_TIMEOUT=60
-IMAGE_TAG=1.0.0
+IMAGE_REPO=ghcr.io/1de2cvz/doc-vector
+IMAGE_TAG=sha-8a8bda2
 HOST_PORT=127.0.0.1:8000
 WORKERS=1
 EOF
@@ -300,8 +293,8 @@ docker compose up -d --no-build
 docker compose ps              # STATUS 显示 healthy
 ```
 
-- **一定要加 `--no-build`**。compose 文件里写了 `build`，不加的话，镜像标签一对不上它就会尝试构建，离线环境会失败。
-- 报 `pull access denied` 或 `no such image`：`.env` 里的 `IMAGE_TAG` 和第 5 步导入的标签不一致。
+- **一定要加 `--no-build`**。compose 文件里写了 `build`，不加的话，镜像名或标签一对不上它就会尝试构建，离线环境会失败。
+- 报 `pull access denied` 或 `no such image`：`.env` 里的 `IMAGE_REPO`、`IMAGE_TAG` 和第 5 步导入的镜像不一致，用 `docker images | grep doc-vector` 对一下。
 
 ### 6.3 验证
 
@@ -462,20 +455,35 @@ EOF
 ### 9.2 启动
 
 ```bash
-docker run -d --name agent-runtime --restart unless-stopped \
-  --env-file .env \
-  --add-host host.docker.internal:host-gateway \
-  -p 127.0.0.1:8770:8770 \
-  -v agent-data:/app/data \
-  --log-opt max-size=50m --log-opt max-file=5 \
-  ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc
-docker logs -f agent-runtime      # 看到「全部就绪」后 Ctrl+C
+cd ~/agent-runtime
+cat > compose.yaml <<'EOF'
+services:
+  agent-runtime:
+    image: ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc
+    container_name: agent-runtime
+    restart: unless-stopped
+    env_file: .env
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports: ["127.0.0.1:8770:8770"]
+    volumes: [agent-data:/app/data]
+    logging:
+      options: { max-size: 50m, max-file: "5" }
+
+volumes:
+  agent-data:
+    name: agent-data
+EOF
+docker compose up -d
+docker compose logs -f            # 看到「全部就绪」后 Ctrl+C
 ```
+
+- 镜像第 5 步已经导入了，这里不用 `pull`。
+- `extra_hosts` 不能删：Linux 上的 Docker 默认没有 `host.docker.internal`，AgentRuntime 要靠它回调 Java 的 kb_search。
 
 - 对话端口只绑本机，Java 在同一台机器上，够用了。要从内网其他机器测试的话，二选一：
   - 用 SSH 隧道：`ssh -N -L 8770:127.0.0.1:8770 <用户>@<服务器>`，然后在本机访问 `http://127.0.0.1:8770`；
-  - 把 `-p` 改成 `8770:8770`，并在防火墙里只放行测试机的 IP。
-- 改了 `.env` 以后，要先 `docker rm -f agent-runtime` 再重新执行上面的 `docker run`。env 文件只在创建容器时读取，只 restart 不会生效。
+  - 把 `ports` 改成 `"8770:8770"`，并在防火墙里只放行测试机的 IP。
+- 改了 `.env` 或 `compose.yaml` 以后，执行 `docker compose up -d`，容器会重建。只 `restart` 不会重新读取 `.env`。
 
 ### 9.3 验证
 
@@ -548,18 +556,12 @@ docker push <正式镜像仓库>/<项目>/pangpt:prod-<日期>
 
 ## 12. 以后怎么升级
 
-1. 在开发环境更新并验证新版本（doc-vector 重新构建、AgentRuntime 拉新标签的镜像、Java 重新打包）。doc-vector 的标签带上提交号，这样正式环境一看标签就知道是哪个版本：
-
-   ```bash
-   cd ~/doc-vector && git pull
-   sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=1.0.0-$(git rev-parse --short HEAD)/" .env
-   docker compose up -d --build && grep IMAGE_TAG .env
-   ```
-2. 只导出有变化的部分，例如：`docker save doc-vector:1.0.0-<提交号> | gzip > doc-vector-1.0.0-<提交号>.tar.gz`。**镜像标签每次都换新的，不要覆盖旧标签**，回滚时要用。
+1. 代码合并到 main 后，CI 会发布新镜像，标签是 `sha-<提交号>`。在开发环境拉取并验证新版本：doc-vector 改 `.env` 的 `IMAGE_TAG` 后 `docker compose pull && docker compose up -d --no-build`，AgentRuntime 改 `compose.yaml` 的标签后 `docker compose pull && docker compose up -d`，Java 重新打包。
+2. 只导出有变化的部分，例如：`docker save ghcr.io/1de2cvz/doc-vector:sha-<提交号> | gzip > doc-vector-sha-<提交号>.tar.gz`。**用具体的提交号标签，不要用 `latest`**，回滚时要用。
 3. 摆渡到正式环境，校验后 `docker load`。
 4. 切换版本：
    - doc-vector：改 `.env` 里的 `IMAGE_TAG`，执行 `docker compose up -d --no-build`；
-   - AgentRuntime：`docker rm -f agent-runtime`，用新标签重新 `docker run`；
+   - AgentRuntime：改 `compose.yaml` 里的标签，执行 `docker compose up -d`；
    - Java：替换 jar，`systemctl restart digital-employee`。
 5. 回滚：切回旧标签或旧 jar，步骤同上。旧镜像不要急着 `docker rmi`。
 
@@ -586,12 +588,12 @@ docker push <正式镜像仓库>/<项目>/pangpt:prod-<日期>
 # 日志
 docker compose -f ~/doc-vector/docker-compose.yml logs -f --tail=200
 journalctl -u digital-employee -f
-docker logs -f --tail=200 agent-runtime
+docker compose -f ~/agent-runtime/compose.yaml logs -f --tail=200
 
 # 重启
 docker compose -f ~/doc-vector/docker-compose.yml restart
 sudo systemctl restart digital-employee
-docker restart agent-runtime
+docker compose -f ~/agent-runtime/compose.yaml restart
 
 # 备份：停机几秒。AgentRuntime 的会话只能靠备份恢复；向量可以用第 8 步重新生成，备份是为了更快恢复
 mkdir -p ~/backup && cd ~/backup
@@ -600,7 +602,7 @@ docker run --rm --entrypoint tar -v agent-data:/app/data -v "$PWD":/backup ghcr.
   czf /backup/agent-data-$(date +%Y%m%d%H%M%S).tgz -C /app/data .
 docker start agent-runtime
 docker compose -f ~/doc-vector/docker-compose.yml stop
-docker run --rm -u 0 --entrypoint tar -v doc-vector-milvus:/data/milvus -v "$PWD":/backup doc-vector:1.0.0 \
+docker run --rm -u 0 --entrypoint tar -v doc-vector-milvus:/data/milvus -v "$PWD":/backup ghcr.io/1de2cvz/doc-vector:sha-8a8bda2 \
   czf /backup/doc-vector-milvus-$(date +%Y%m%d%H%M%S).tgz -C /data/milvus .
 docker compose -f ~/doc-vector/docker-compose.yml start
 ```

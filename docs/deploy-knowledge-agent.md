@@ -6,10 +6,10 @@
 
 | 仓库 | 使用的版本 |
 | --- | --- |
-| [doc-vector](https://github.com/1de2cvz/doc-vector) | `main`（`0bff2d9`） |
+| [doc-vector](https://github.com/1de2cvz/doc-vector) | 镜像 `ghcr.io/1de2cvz/doc-vector:sha-8a8bda2`（CI 发布，含 #6、#7） |
 | [digital-employee](https://github.com/1de2cvz/digital-employee) | `main`（`cb42af6`，含 #2–#5） |
 | [AgentRuntime](https://github.com/1de2cvz/AgentRuntime) | 镜像 `ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc`（含 #12） |
-| [pangpt](https://github.com/1de2cvz/pangpt) | `main`，需要先合并 [#2](https://github.com/1de2cvz/pangpt/pull/2)（nginx 配置打进镜像） |
+| [pangpt](https://github.com/1de2cvz/pangpt) | `main`（含 #1、#2） |
 
 ---
 
@@ -59,7 +59,7 @@ umask                     # 应为 0022；是 0077 的话先执行 umask 022，�
 
 ### 1.2 登录 GHCR
 
-共享基础镜像和 AgentRuntime 镜像都是私有的。在 GitHub → Settings → Developer settings → Personal access tokens 建一个只带 `read:packages` 权限的令牌：
+doc-vector 和 AgentRuntime 的镜像都是私有的。在 GitHub → Settings → Developer settings → Personal access tokens 建一个只带 `read:packages` 权限的令牌：
 
 ```bash
 echo '<GitHub 令牌>' | docker login ghcr.io -u 1de2cvz --password-stdin
@@ -111,10 +111,12 @@ cat ~/deploy-secrets.env | cut -d= -f1      # 只看名字，确认 8 项都在
 
 ## 2. 部署 doc-vector
 
-### 2.1 拉代码、写配置
+### 2.1 取 compose 文件、写配置
+
+镜像由 doc-vector 的 CI 构建好了，服务器上不构建。代码仓库只用来取 `docker-compose.yml`。
 
 ```bash
-git clone https://github.com/1de2cvz/doc-vector.git ~/doc-vector
+git clone https://github.com/1de2cvz/doc-vector.git ~/doc-vector      # 已经 clone 过就 git pull
 cd ~/doc-vector && git checkout main
 . ~/deploy-secrets.env
 ( umask 077
@@ -132,22 +134,27 @@ RERANK_BASE_URL=https://api.siliconflow.cn
 RERANK_MODEL=BAAI/bge-reranker-v2-m3
 RERANK_API_KEY=${SF_KEY}
 UPSTREAM_TIMEOUT=60
-IMAGE_TAG=1.0.0
+IMAGE_REPO=ghcr.io/1de2cvz/doc-vector
+IMAGE_TAG=sha-8a8bda2
 HOST_PORT=127.0.0.1:8000
 WORKERS=1
 EOF
 )
 ```
 
+- `IMAGE_TAG` 写具体的提交号标签，不要写 `latest`。升级、回滚时只改这一行。
 - `HOST_PORT=127.0.0.1:8000` 表示只让本机访问。**【分机】** Java 在别的机器上时改成 `8000`，并用安全组只放行 Java 服务器。
 - `MILVUS_MODE=lite` 时 `WORKERS` 必须是 1。
 
-### 2.2 构建并启动
+### 2.2 拉取镜像并启动
 
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d --no-build
 docker compose ps              # STATUS 显示 healthy
 ```
+
+- `--no-build`：compose 文件里保留了本地构建用的 `build` 段，加上这个参数，镜像拉不下来时会直接报错，而不是在服务器上开始构建。
 
 ### 2.3 验证
 
@@ -330,17 +337,35 @@ EOF
 
 ### 4.2 启动
 
+在 `~/agent-runtime/` 下写 compose 文件，和 `.env` 放在一起：
+
 ```bash
-IMAGE=ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc
-docker pull "$IMAGE"
-docker run -d --name agent-runtime --restart unless-stopped \
-  --env-file .env \
-  --add-host host.docker.internal:host-gateway \
-  -p 8770:8770 \
-  -v agent-data:/app/data \
-  "$IMAGE"
-docker logs -f agent-runtime      # 看到「全部就绪」后 Ctrl+C
+cd ~/agent-runtime
+cat > compose.yaml <<'EOF'
+services:
+  agent-runtime:
+    image: ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc
+    container_name: agent-runtime
+    restart: unless-stopped
+    env_file: .env
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports: ["8770:8770"]
+    volumes: [agent-data:/app/data]
+    logging:
+      options: { max-size: 50m, max-file: "5" }
+
+volumes:
+  agent-data:
+    name: agent-data
+EOF
+docker compose pull
+docker compose up -d
+docker compose logs -f            # 看到「全部就绪」后 Ctrl+C
 ```
+
+- `extra_hosts` 不能删：Linux 上的 Docker 默认没有 `host.docker.internal`，AgentRuntime 要靠它回调 Java 的 kb_search。
+- 升级、回滚：改 `image` 的标签，再执行 `docker compose pull && docker compose up -d`。改了 `.env` 也是执行 `docker compose up -d`，容器会重建；只 `restart` 不会重新读取 `.env`。
+- 之前用 `docker run` 启动过的，先 `docker rm -f agent-runtime` 再执行上面的命令。数据卷还是 `agent-data`，会话不会丢。
 
 在云服务器的安全组（或防火墙）里，8770 端口只放行 Java 服务器和你自己的 IP。这里走的是明文 HTTP，令牌和对话内容在网络上都可见。
 
@@ -448,9 +473,9 @@ pnpm build          # 产物在 dist/
 
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
-| `docker compose up --build` 拉不到 `ghcr.io/1de2cvz/base` | 没登录 GHCR，或令牌没有 `read:packages` | 重做 1.2 |
-| doc-vector 一直 Restarting，日志里有 `PermissionError: ... /app/app/__init__.py` | 代码是在 `umask 077` 下检出的，文件只有 root 能读 | `chmod -R a+rX app scripts` 后重新 `docker compose up -d --build`；doc-vector #6 合并后，镜像构建时会自动修正权限 |
-| 构建报 `no space left on device` | Docker 数据目录（默认 `/var/lib/docker`，在系统盘上）空间不够 | `docker builder prune -f`、`docker image prune -f`；仍不够就把 Docker 的 `data-root` 挪到数据盘 |
+| `docker compose pull` 报 `unauthorized` 或 `denied` | 没登录 GHCR，或令牌没有 `read:packages` | 重做 1.2 |
+| doc-vector 一直 Restarting，日志里有 `PermissionError: ... /app/app/__init__.py` | 用的是 doc-vector #6 之前在本地构建的镜像，构建时代码是在 `umask 077` 下检出的 | 改用 CI 发布的镜像（2.1 的 `IMAGE_REPO`、`IMAGE_TAG`） |
+| 拉取镜像时报 `no space left on device` | Docker 数据目录（默认 `/var/lib/docker`，在系统盘上）空间不够 | `docker image prune -f`（删掉不用的旧镜像）；仍不够就把 Docker 的 `data-root` 挪到数据盘 |
 | doc-vector `health/ready` 返回 503 | 硅基流动 Key 错误或网络不通 | 看 `data` 里哪一项是 false，在服务器上 `curl https://api.siliconflow.cn` 试一下 |
 | Java 报「文档向量服务未配置：doc-vector.base-url」 | 没有设 `DOC_VECTOR_BASE_URL` | 补上后重启 Java |
 | Java 报 `UNAUTHORIZED`（调 doc-vector 时） | `DOC_VECTOR_API_KEY` 与 doc-vector 的 `API_KEY` 不一致 | 改成同一个值 |
@@ -475,7 +500,8 @@ pnpm build          # 产物在 dist/
 - **Java**：换回备份的旧 jar 和旧配置（包括 `SMART_SEGMENT_PYTHON_BASE_URL`），重启。前提是旧 Python 服务还没停，所以验收前不要停它。旧 jar 没有 `/rest/agent`，要和 pangpt 一起回滚。
 - **注意**：新版运行期间导入或修改的切片，向量只写到了 doc-vector。回滚后要把这些切片在旧服务里重新向量化一次。
 - **doc-vector**：`cd ~/doc-vector && docker compose down`，数据卷会保留；不要加 `-v`。
-- **AgentRuntime**：`docker rm -f agent-runtime`，用原来的镜像标签重新 `docker run`。会话数据在 `agent-data` 卷里。
+- **AgentRuntime**：把 `~/agent-runtime/compose.yaml` 里的标签改回原来的，`docker compose up -d`。会话数据在 `agent-data` 卷里。
+- **doc-vector 升级到有问题的版本**：`.env` 里的 `IMAGE_TAG` 改回原来的，`docker compose up -d --no-build`。
 - **pangpt**：发布上一版镜像。
 
 ## 附录 C：日常命令
@@ -484,12 +510,12 @@ pnpm build          # 产物在 dist/
 # 日志
 docker compose -f ~/doc-vector/docker-compose.yml logs -f --tail=200
 journalctl -u digital-employee -f
-docker logs -f --tail=200 agent-runtime
+docker compose -f ~/agent-runtime/compose.yaml logs -f --tail=200
 
 # 重启
 docker compose -f ~/doc-vector/docker-compose.yml restart
 sudo systemctl restart digital-employee
-docker restart agent-runtime
+docker compose -f ~/agent-runtime/compose.yaml restart
 
 # 备份 AgentRuntime 数据（停机几秒）
 docker stop agent-runtime
