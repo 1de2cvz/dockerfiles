@@ -1,6 +1,6 @@
 # 知识库与 Agent 服务部署手册
 
-按顺序从第 0 步做到第 7 步，每一步验证通过再往下走。命令都可以直接复制执行，`<尖括号>` 里的内容要换成实际值。
+首次部署按顺序从第 0 步做到第 7 步，每一步验证通过再往下走；以后升级、回滚看第 8 章。命令都可以直接复制执行，`<尖括号>` 里的内容要换成实际值。
 
 本手册适用于能联网的环境。正式环境离线、使用内网模型 API 时，见[离线部署手册](deploy-offline.md)。
 
@@ -325,7 +325,9 @@ TOOL_API_BASE=http://host.docker.internal:9448/rest
 TOOL_HTTP_ALLOWED_ORIGINS=http://host.docker.internal:9448
 TOOL_API_TOKEN=${AGENT_TOOL_TOKEN}
 TOOL_CREDENTIAL_ALLOWLIST=TOOL_API_TOKEN
-IMAGE_TAG=sha-e2f68bc
+IMAGE_PREFIX=ghcr.io/1de2cvz/
+TAG=sha-e2f68bc
+CHAT_HOST_PORT=8770
 EOF
 )
 ```
@@ -333,30 +335,47 @@ EOF
 - 硅基流动的地址要带 `/v1`：网关会在后面拼 `/chat/completions`。doc-vector 那边不带。
 - `GATEWAY_UPSTREAM_MODEL` 把所有请求的模型名改成 `deepseek-ai/DeepSeek-V3.2`。
 - `USER_TOKENS` 里 Java 那一项的 `userId` 必须是 `digital-employee`（与 Java 的 `AGENT_RUNTIME_CALLER_ID` 默认值一致），否则 kb_search 会被 Java 拒绝。
+- `IMAGE_PREFIX`（末尾带斜杠）和 `TAG` 决定用哪个镜像，升级、回滚只改 `TAG`。变量名沿用 AgentRuntime 仓库的约定，和 doc-vector 的 `IMAGE_REPO`、`IMAGE_TAG` 不同。
+- `CHAT_HOST_PORT=8770` 让对话端口对外开放，方便你从自己电脑测试；只给本机 Java 用的话删掉这一行，默认只绑 `127.0.0.1`。
 - 不要配 `CONSOLE_TENANT`：端口对外开放时，配了它就不需要令牌也能打开对话页。
 - **【分机】** Java 不在这台机器时，`TOOL_API_BASE`、`TOOL_HTTP_ALLOWED_ORIGINS` 改成 Java 的地址（后者只写协议、主机和端口）。
 
 ### 4.2 启动
 
-在 `~/agent-runtime/` 下写 compose 文件，和 `.env` 放在一起：
+compose 文件就是 AgentRuntime 仓库里的 [`compose.allinone.yaml`](https://github.com/1de2cvz/AgentRuntime/blob/main/compose.allinone.yaml)，改名为 `compose.yaml`，和 `.env` 放在一起。下面直接写出它的内容：
 
 ```bash
 cd ~/agent-runtime
 cat > compose.yaml <<'EOF'
+name: agent-runtime
+
 services:
   agent-runtime:
-    image: ghcr.io/1de2cvz/agent-runtime:${IMAGE_TAG:?在 .env 里设置 IMAGE_TAG}
+    image: ${IMAGE_PREFIX:-}agent-runtime:${TAG:?在 .env 里设置 TAG，如 sha-<短提交号>}
     container_name: agent-runtime
     restart: unless-stopped
     env_file: .env
-    extra_hosts: ["host.docker.internal:host-gateway"]
-    ports: ["8770:8770"]
-    volumes: [agent-data:/app/data]
+    extra_hosts:
+      # 工具经 host.docker.internal 访问宿主机上的业务系统（如 kb_search 回调 Java）。
+      # Linux 上的 Docker 默认没有这个主机名，要显式加上
+      - host.docker.internal:host-gateway
+    ports:
+      # 默认只绑回环。要从别的机器访问对话端口时在 .env 里设 CHAT_HOST_PORT=8770，并用防火墙限制来源
+      - "${CHAT_HOST_PORT:-127.0.0.1:8770}:8770"
+      # 管理服务只在 .env 里设了 ADMIN_ENABLED=1 和 ADMIN_TOKEN 时启动；只绑回环，经 SSH 隧道访问
+      - "${ADMIN_HOST_PORT:-127.0.0.1:8771}:8771"
+    volumes:
+      # 会话、注册中心、网关用量都在这里，见 DEPLOY.md「备份与恢复」
+      - agent-data:/app/data
     logging:
-      options: { max-size: 50m, max-file: "5" }
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
 volumes:
   agent-data:
+    # 固定卷名，和 docker run 方式用的是同一个卷，两种方式可以互相切换
     name: agent-data
 EOF
 docker compose pull
@@ -364,9 +383,9 @@ docker compose up -d
 docker compose logs -f            # 看到「全部就绪」后 Ctrl+C
 ```
 
+- 这个文件写好后不用再改。版本号在 `.env` 的 `TAG` 里，升级、回滚见第 8 章。
 - `extra_hosts` 不能删：Linux 上的 Docker 默认没有 `host.docker.internal`，AgentRuntime 要靠它回调 Java 的 kb_search。
-- 版本号在 `.env` 的 `IMAGE_TAG` 里，和 doc-vector 一样；`compose.yaml` 写好后不用再改。
-- 升级、回滚：改 `.env` 里的 `IMAGE_TAG`，再执行 `docker compose pull && docker compose up -d`。改了 `.env` 的其他配置也是执行 `docker compose up -d`，容器会重建；只 `restart` 不会重新读取 `.env`。
+- 改了 `.env` 以后执行 `docker compose up -d`，容器会重建；只 `restart` 不会重新读取 `.env`。
 - 之前用 `docker run` 启动过的，先 `docker rm -f agent-runtime` 再执行上面的命令。数据卷还是 `agent-data`，会话不会丢。
 
 在云服务器的安全组（或防火墙）里，8770 端口只放行 Java 服务器和你自己的 IP。这里走的是明文 HTTP，令牌和对话内容在网络上都可见。
@@ -471,6 +490,111 @@ pnpm build          # 产物在 dist/
 
 ---
 
+## 8. 升级与回滚
+
+### 8.1 原则
+
+| | 放在哪 | 升级时改不改 |
+| --- | --- | --- |
+| 启动方式（镜像名、端口、数据卷、日志） | `docker-compose.yml` / `compose.yaml` | 不改。只有发布说明写了「compose 文件有变化」时才换新文件 |
+| 版本号 | `.env`：doc-vector 是 `IMAGE_TAG`，AgentRuntime 是 `TAG` | 改 |
+| 配置和密钥 | `.env` | 新版本新增配置项时补上 |
+| 数据（向量、会话） | 数据卷 `doc-vector-milvus`、`doc-vector-uploads`、`agent-data` | 不动，重建容器不影响 |
+
+- **新版本号从哪来**：代码合并到 main 后，GitHub 仓库的 Actions 页面里，那次运行的 Publish 任务成功，镜像标签就是 `sha-<合并提交的前 7 位>`。
+- **不要用 `latest`**：写具体的提交号，回滚时才知道退回哪个版本。
+- **多个服务一起升级时的顺序**：doc-vector → Java → AgentRuntime → pangpt，先升级被调用的一方。
+- **离线正式环境**：先在开发环境按本章升级、验证通过，再按[离线部署手册](deploy-offline.md)第 12 节把新镜像带过去。
+
+### 8.2 升级前
+
+```bash
+# 1) 记下当前版本，回滚时要用
+grep -H -E '^(IMAGE_TAG|TAG)=' ~/doc-vector/.env ~/agent-runtime/.env
+ls -l /opt/digital-employee/*.jar
+
+# 2) 备份数据（各停机几秒）
+mkdir -p ~/backup && cd ~/backup
+docker compose -f ~/agent-runtime/compose.yaml stop
+docker run --rm --entrypoint tar -v agent-data:/app/data -v "$PWD":/backup \
+  "$(docker compose -f ~/agent-runtime/compose.yaml config --images)" \
+  czf /backup/agent-data-$(date +%Y%m%d%H%M%S).tgz -C /app/data .
+docker compose -f ~/agent-runtime/compose.yaml start
+docker compose -f ~/doc-vector/docker-compose.yml stop
+docker run --rm -u 0 --entrypoint tar -v doc-vector-milvus:/data/milvus -v "$PWD":/backup \
+  "$(docker compose -f ~/doc-vector/docker-compose.yml config --images)" \
+  czf /backup/doc-vector-milvus-$(date +%Y%m%d%H%M%S).tgz -C /data/milvus .
+docker compose -f ~/doc-vector/docker-compose.yml start
+ls -lh ~/backup
+```
+
+- AgentRuntime 的会话只能靠备份恢复，**每次升级前都要备份**。
+- doc-vector 的向量可以用 3.6 从数据库重新生成，备份是为了出问题时能更快恢复。
+
+### 8.3 升级 doc-vector
+
+```bash
+cd ~/doc-vector
+sed -i 's/^IMAGE_TAG=.*/IMAGE_TAG=sha-<新提交号>/' .env
+docker compose pull
+
+# 把新版本新增的配置项补进 .env：先预览，确认后加 --write 写入（原文件备份为 .env.bak.<时间>）
+IMAGE=$(docker compose config --images)
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work --entrypoint python "$IMAGE" scripts/env_sync.py /work/.env
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work --entrypoint python "$IMAGE" scripts/env_sync.py /work/.env --write
+tail -n 20 .env                   # 看一下补了什么，按需修改
+
+docker compose up -d --no-build
+docker compose ps                 # STATUS 显示 healthy
+curl -fsS http://127.0.0.1:8000/api/v1/health/ready; echo
+docker exec doc-vector python scripts/smoke_test.py; echo "退出码 $?"
+```
+
+- env_sync 只会追加 `.env` 缺少的配置项，已有的值一律不动。新版本不再使用的配置项只列出来，不会删除。
+- 报 `can't open file ... env_sync.py`：说明新镜像还是 doc-vector#8 之前构建的，镜像里没有这个脚本。跳过这一步，对照仓库里的 `.env.example` 手动检查即可。
+
+### 8.4 升级 AgentRuntime
+
+```bash
+cd ~/agent-runtime
+sed -i 's/^TAG=.*/TAG=sha-<新提交号>/' .env
+docker compose pull
+docker compose up -d
+docker compose logs -f            # 看到「全部就绪」后 Ctrl+C
+```
+
+然后按 4.3 验证。
+
+- 新版本如果新增了配置项，PR 说明和 AgentRuntime 仓库的 `.env.example` 里会写，手动补进 `.env`。
+- 注册中心（Agent、工具的定义）在数据卷里，升级镜像不会自动更新。新版本带了新的 Agent 或工具时，按附录 A「没有这个 Agent」那一行处理。
+
+### 8.5 升级 Java 和 pangpt
+
+- **Java**：打包新 jar，把旧 jar 改名备份（例如加上 `.bak-日期`），放入新 jar，然后 `sudo systemctl restart digital-employee`，再按 3.5 验证。新版本新增的环境变量看 digital-employee 的 README，补进 `/etc/digital-employee.env`。
+- **pangpt**：按原来的 Jenkins 流程发布。只有 `nginx/default.conf` 有改动时，才需要重新核对 5.1。
+
+### 8.6 回滚
+
+| 服务 | 做法 |
+| --- | --- |
+| doc-vector | `.env` 里的 `IMAGE_TAG` 改回 8.2 记下的旧值，执行 `docker compose up -d --no-build`。env_sync 追加的配置项留着也没关系，旧版本会忽略；想完全还原，就用 `.env.bak.<时间>` 覆盖 `.env` |
+| AgentRuntime | `.env` 里的 `TAG` 改回旧值，执行 `docker compose up -d` |
+| Java | 换回旧 jar，`sudo systemctl restart digital-employee` |
+| pangpt | 发布上一版镜像 |
+
+- 旧镜像留在服务器上，回滚时不用重新下载。清理旧镜像（`docker image prune`）要等新版本稳定运行一段时间之后。
+- 如果新版本改动了数据格式，只改回旧版本号可能起不来。这时先把版本号改回旧值，再用 8.2 的备份恢复数据卷。**这会清空卷里现有的数据**，执行前确认备份文件是对的：
+
+  ```bash
+  docker compose -f ~/agent-runtime/compose.yaml stop
+  docker run --rm --entrypoint sh -v agent-data:/app/data -v ~/backup:/backup \
+    "$(docker compose -f ~/agent-runtime/compose.yaml config --images)" \
+    -c 'rm -rf /app/data/* && tar xzf /backup/<备份文件>.tgz -C /app/data'
+  docker compose -f ~/agent-runtime/compose.yaml start
+  ```
+
+---
+
 ## 附录 A：常见问题
 
 | 现象 | 原因 | 处理 |
@@ -497,13 +621,13 @@ pnpm build          # 产物在 dist/
 | AgentRuntime 没有回答，日志里有 404 | `GATEWAY_UPSTREAM_BASE` 少了 `/v1` | 改成 `https://api.siliconflow.cn/v1` 后重建容器 |
 | 回答最后才一次性出现 | nginx 或更前面的网关缓冲了事件流 | 每一层代理都关闭对 `/rest/agent/` 的缓冲 |
 
-## 附录 B：回滚
+## 附录 B：首次上线的回滚（退回旧的 Python 切片服务）
 
-- **Java**：换回备份的旧 jar 和旧配置（包括 `SMART_SEGMENT_PYTHON_BASE_URL`），重启。前提是旧 Python 服务还没停，所以验收前不要停它。旧 jar 没有 `/rest/agent`，要和 pangpt 一起回滚。
+这里说的是第一次上线后发现问题、要整体退回旧架构的情况。日常升级的回滚见 8.6。
+
+- **Java**：换回备份的旧 jar 和旧配置（包括 `SMART_SEGMENT_PYTHON_BASE_URL`），然后重启。前提是旧的 Python 服务还没停，所以验收通过之前不要停它。旧 jar 没有 `/rest/agent`，要和 pangpt 一起回滚。
 - **注意**：新版运行期间导入或修改的切片，向量只写到了 doc-vector。回滚后要把这些切片在旧服务里重新向量化一次。
-- **doc-vector**：`cd ~/doc-vector && docker compose down`，数据卷会保留；不要加 `-v`。
-- **AgentRuntime**：`~/agent-runtime/.env` 里的 `IMAGE_TAG` 改回原来的，`docker compose up -d`。会话数据在 `agent-data` 卷里。
-- **doc-vector 升级到有问题的版本**：`.env` 里的 `IMAGE_TAG` 改回原来的，`docker compose up -d --no-build`。
+- **doc-vector、AgentRuntime**：执行 `docker compose down` 停掉即可，数据卷会保留，不要加 `-v`。
 - **pangpt**：发布上一版镜像。
 
 ## 附录 C：日常命令
@@ -519,11 +643,10 @@ docker compose -f ~/doc-vector/docker-compose.yml restart
 sudo systemctl restart digital-employee
 docker compose -f ~/agent-runtime/compose.yaml restart
 
-# 备份 AgentRuntime 数据（停机几秒）
-docker stop agent-runtime
-docker run --rm --entrypoint tar -v agent-data:/app/data -v "$PWD":/backup ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc \
-  czf /backup/agent-data-$(date +%Y%m%d%H%M%S).tgz -C /app/data .
-docker start agent-runtime
+# 当前版本
+grep -H -E '^(IMAGE_TAG|TAG)=' ~/doc-vector/.env ~/agent-runtime/.env
+
+# 备份：见 8.2
 ```
 
 更多细节：doc-vector 的 [Docker部署手册](https://github.com/1de2cvz/doc-vector/blob/main/docs/Docker%E9%83%A8%E7%BD%B2%E6%89%8B%E5%86%8C.md)、AgentRuntime 的 [DEPLOY.md](https://github.com/1de2cvz/AgentRuntime/blob/main/DEPLOY.md)、digital-employee 的 [README](https://github.com/1de2cvz/digital-employee/blob/main/README.md)。

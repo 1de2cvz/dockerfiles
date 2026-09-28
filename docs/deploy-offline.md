@@ -58,7 +58,7 @@ docker pull ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc
 ls -l /opt/digital-employee/digital-employee-1.0.0.jar     # 换成你实际放 jar 的路径
 ```
 
-- 用开发环境验证通过的那两个标签。doc-vector 的标签在它的 `.env`（`IMAGE_TAG`）里能看到。
+- 用开发环境验证通过的那两个标签：doc-vector 看它 `.env` 里的 `IMAGE_TAG`，AgentRuntime 看它 `.env` 里的 `TAG`。
 - 缺 jar：见部署手册 3.1。服务器上没有 Maven 时，可以用容器打包：
 
   ```bash
@@ -446,7 +446,8 @@ TOOL_API_BASE=http://host.docker.internal:9448/rest
 TOOL_HTTP_ALLOWED_ORIGINS=http://host.docker.internal:9448
 TOOL_API_TOKEN=${AGENT_TOOL_TOKEN}
 TOOL_CREDENTIAL_ALLOWLIST=TOOL_API_TOKEN
-IMAGE_TAG=sha-e2f68bc
+IMAGE_PREFIX=ghcr.io/1de2cvz/
+TAG=sha-e2f68bc
 EOF
 )
 ```
@@ -455,23 +456,40 @@ EOF
 
 ### 9.2 启动
 
+compose 文件就是 AgentRuntime 仓库里的 `compose.allinone.yaml`，改名为 `compose.yaml`。下面直接写出它的内容：
+
 ```bash
 cd ~/agent-runtime
 cat > compose.yaml <<'EOF'
+name: agent-runtime
+
 services:
   agent-runtime:
-    image: ghcr.io/1de2cvz/agent-runtime:${IMAGE_TAG:?在 .env 里设置 IMAGE_TAG}
+    image: ${IMAGE_PREFIX:-}agent-runtime:${TAG:?在 .env 里设置 TAG，如 sha-<短提交号>}
     container_name: agent-runtime
     restart: unless-stopped
     env_file: .env
-    extra_hosts: ["host.docker.internal:host-gateway"]
-    ports: ["127.0.0.1:8770:8770"]
-    volumes: [agent-data:/app/data]
+    extra_hosts:
+      # 工具经 host.docker.internal 访问宿主机上的业务系统（如 kb_search 回调 Java）。
+      # Linux 上的 Docker 默认没有这个主机名，要显式加上
+      - host.docker.internal:host-gateway
+    ports:
+      # 默认只绑回环。要从别的机器访问对话端口时在 .env 里设 CHAT_HOST_PORT=8770，并用防火墙限制来源
+      - "${CHAT_HOST_PORT:-127.0.0.1:8770}:8770"
+      # 管理服务只在 .env 里设了 ADMIN_ENABLED=1 和 ADMIN_TOKEN 时启动；只绑回环，经 SSH 隧道访问
+      - "${ADMIN_HOST_PORT:-127.0.0.1:8771}:8771"
+    volumes:
+      # 会话、注册中心、网关用量都在这里，见 DEPLOY.md「备份与恢复」
+      - agent-data:/app/data
     logging:
-      options: { max-size: 50m, max-file: "5" }
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
 volumes:
   agent-data:
+    # 固定卷名，和 docker run 方式用的是同一个卷，两种方式可以互相切换
     name: agent-data
 EOF
 docker compose up -d
@@ -479,12 +497,11 @@ docker compose logs -f            # 看到「全部就绪」后 Ctrl+C
 ```
 
 - 镜像第 5 步已经导入了，这里不用 `pull`。
+- 这个文件写好后不用再改。版本号在 `.env` 的 `TAG` 里（镜像前缀是 `IMAGE_PREFIX`），变量名沿用 AgentRuntime 仓库的约定。
 - `extra_hosts` 不能删：Linux 上的 Docker 默认没有 `host.docker.internal`，AgentRuntime 要靠它回调 Java 的 kb_search。
-
-- 对话端口只绑本机，Java 在同一台机器上，够用了。要从内网其他机器测试的话，二选一：
+- 端口默认只绑本机，Java 在同一台机器上，够用了。要从内网其他机器测试的话，二选一：
   - 用 SSH 隧道：`ssh -N -L 8770:127.0.0.1:8770 <用户>@<服务器>`，然后在本机访问 `http://127.0.0.1:8770`；
-  - 把 `ports` 改成 `"8770:8770"`，并在防火墙里只放行测试机的 IP。
-- 版本号在 `.env` 的 `IMAGE_TAG` 里，`compose.yaml` 写好后不用再改。
+  - 在 `.env` 里加 `CHAT_HOST_PORT=8770`，执行 `docker compose up -d`，并在防火墙里只放行测试机的 IP。
 - 改了 `.env` 以后，执行 `docker compose up -d`，容器会重建。只 `restart` 不会重新读取 `.env`。
 
 ### 9.3 验证
@@ -558,14 +575,59 @@ docker push <正式镜像仓库>/<项目>/pangpt:prod-<日期>
 
 ## 12. 以后怎么升级
 
-1. 代码合并到 main 后，CI 会发布新镜像，标签是 `sha-<提交号>`。在开发环境拉取并验证新版本：doc-vector 改 `.env` 的 `IMAGE_TAG` 后 `docker compose pull && docker compose up -d --no-build`，AgentRuntime 改 `.env` 的 `IMAGE_TAG` 后 `docker compose pull && docker compose up -d`，Java 重新打包。
-2. 只导出有变化的部分，例如：`docker save ghcr.io/1de2cvz/doc-vector:sha-<提交号> | gzip > doc-vector-sha-<提交号>.tar.gz`。**用具体的提交号标签，不要用 `latest`**，回滚时要用。
-3. 摆渡到正式环境，校验后 `docker load`。
-4. 切换版本：
-   - doc-vector：改 `.env` 里的 `IMAGE_TAG`，执行 `docker compose up -d --no-build`；
-   - AgentRuntime：改 `.env` 里的 `IMAGE_TAG`，执行 `docker compose up -d`；
-   - Java：替换 jar，`systemctl restart digital-employee`。
-5. 回滚：切回旧标签或旧 jar，步骤同上。旧镜像不要急着 `docker rmi`。
+原则和联网环境一样（见[部署手册](deploy-knowledge-agent.md)第 8 章）：compose 文件不改，只改 `.env` 里的版本号；数据在数据卷里，升级不受影响。区别只在于新镜像要从开发环境带过来。
+
+### 12.1 开发环境：升级、验证、导出
+
+1. 代码合并到 main 后，CI 会发布新镜像，标签是 `sha-<提交号>`。先在开发环境按部署手册第 8 章升级并验证通过。
+2. 导出有变化的镜像，连同校验文件一起带走：
+
+   ```bash
+   OUT=~/upgrade-$(date +%Y%m%d) && mkdir -p "$OUT" && cd "$OUT"
+   docker save ghcr.io/1de2cvz/doc-vector:sha-<新提交号> | gzip > doc-vector.tar.gz          # doc-vector 有更新时
+   docker save ghcr.io/1de2cvz/agent-runtime:sha-<新提交号> | gzip > agent-runtime.tar.gz    # AgentRuntime 有更新时
+   cp /opt/digital-employee/digital-employee-1.0.0.jar .                                    # Java 有更新时
+   sha256sum * > SHA256SUMS
+   ```
+
+   用具体的提交号标签，不要用 `latest`，回滚时要用。
+
+### 12.2 正式环境：备份、导入、切换
+
+```bash
+cd ~/<升级包目录> && sha256sum -c SHA256SUMS
+for f in *.tar.gz; do gunzip -c "$f" | docker load; done
+grep -H -E '^(IMAGE_TAG|TAG)=' ~/doc-vector/.env ~/agent-runtime/.env     # 记下当前版本，回滚时要用
+```
+
+先按附录 B 备份两个数据卷，然后逐个切换：
+
+```bash
+# doc-vector：改版本号，补新增的配置项（先预览，确认后加 --write），重建
+cd ~/doc-vector
+sed -i 's/^IMAGE_TAG=.*/IMAGE_TAG=sha-<新提交号>/' .env
+IMAGE=$(docker compose config --images)
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work --entrypoint python "$IMAGE" scripts/env_sync.py /work/.env
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work --entrypoint python "$IMAGE" scripts/env_sync.py /work/.env --write
+docker compose up -d --no-build
+docker exec doc-vector python scripts/smoke_test.py; echo "退出码 $?"
+
+# AgentRuntime：改版本号，重建
+cd ~/agent-runtime
+sed -i 's/^TAG=.*/TAG=sha-<新提交号>/' .env
+docker compose up -d
+```
+
+- env_sync 补上的配置项用的是 `.env.example` 里的默认值。**离线环境要特别检查**：新增的配置项里如果有模型地址、外网地址，要改成内网的值。
+- Java：替换 jar，执行 `sudo systemctl restart digital-employee`。
+- 升级完成后，按第 11 步把验收项再过一遍。
+
+### 12.3 回滚
+
+- doc-vector：`IMAGE_TAG` 改回旧值，执行 `docker compose up -d --no-build`。想把 `.env` 也完全还原，就用 `.env.bak.<时间>` 覆盖。
+- AgentRuntime：`TAG` 改回旧值，执行 `docker compose up -d`。
+- Java：换回旧 jar，然后重启。
+- 旧镜像不要急着 `docker rmi`，回滚时要用。数据格式有变化、改回旧版本号也起不来时，用附录 B 的备份恢复数据卷，做法同部署手册 8.6。
 
 ---
 
@@ -599,12 +661,14 @@ docker compose -f ~/agent-runtime/compose.yaml restart
 
 # 备份：停机几秒。AgentRuntime 的会话只能靠备份恢复；向量可以用第 8 步重新生成，备份是为了更快恢复
 mkdir -p ~/backup && cd ~/backup
-docker stop agent-runtime
-docker run --rm --entrypoint tar -v agent-data:/app/data -v "$PWD":/backup ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc \
+docker compose -f ~/agent-runtime/compose.yaml stop
+docker run --rm --entrypoint tar -v agent-data:/app/data -v "$PWD":/backup \
+  "$(docker compose -f ~/agent-runtime/compose.yaml config --images)" \
   czf /backup/agent-data-$(date +%Y%m%d%H%M%S).tgz -C /app/data .
-docker start agent-runtime
+docker compose -f ~/agent-runtime/compose.yaml start
 docker compose -f ~/doc-vector/docker-compose.yml stop
-docker run --rm -u 0 --entrypoint tar -v doc-vector-milvus:/data/milvus -v "$PWD":/backup ghcr.io/1de2cvz/doc-vector:sha-8a8bda2 \
+docker run --rm -u 0 --entrypoint tar -v doc-vector-milvus:/data/milvus -v "$PWD":/backup \
+  "$(docker compose -f ~/doc-vector/docker-compose.yml config --images)" \
   czf /backup/doc-vector-milvus-$(date +%Y%m%d%H%M%S).tgz -C /data/milvus .
 docker compose -f ~/doc-vector/docker-compose.yml start
 ```
