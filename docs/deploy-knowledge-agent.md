@@ -325,6 +325,7 @@ TOOL_API_BASE=http://host.docker.internal:9448/rest
 TOOL_HTTP_ALLOWED_ORIGINS=http://host.docker.internal:9448
 TOOL_API_TOKEN=${AGENT_TOOL_TOKEN}
 TOOL_CREDENTIAL_ALLOWLIST=TOOL_API_TOKEN
+IMAGE_TAG=sha-e2f68bc
 EOF
 )
 ```
@@ -344,7 +345,7 @@ cd ~/agent-runtime
 cat > compose.yaml <<'EOF'
 services:
   agent-runtime:
-    image: ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc
+    image: ghcr.io/1de2cvz/agent-runtime:${IMAGE_TAG:?在 .env 里设置 IMAGE_TAG}
     container_name: agent-runtime
     restart: unless-stopped
     env_file: .env
@@ -364,7 +365,8 @@ docker compose logs -f            # 看到「全部就绪」后 Ctrl+C
 ```
 
 - `extra_hosts` 不能删：Linux 上的 Docker 默认没有 `host.docker.internal`，AgentRuntime 要靠它回调 Java 的 kb_search。
-- 升级、回滚：改 `image` 的标签，再执行 `docker compose pull && docker compose up -d`。改了 `.env` 也是执行 `docker compose up -d`，容器会重建；只 `restart` 不会重新读取 `.env`。
+- 版本号在 `.env` 的 `IMAGE_TAG` 里，和 doc-vector 一样；`compose.yaml` 写好后不用再改。
+- 升级、回滚：改 `.env` 里的 `IMAGE_TAG`，再执行 `docker compose pull && docker compose up -d`。改了 `.env` 的其他配置也是执行 `docker compose up -d`，容器会重建；只 `restart` 不会重新读取 `.env`。
 - 之前用 `docker run` 启动过的，先 `docker rm -f agent-runtime` 再执行上面的命令。数据卷还是 `agent-data`，会话不会丢。
 
 在云服务器的安全组（或防火墙）里，8770 端口只放行 Java 服务器和你自己的 IP。这里走的是明文 HTTP，令牌和对话内容在网络上都可见。
@@ -500,7 +502,7 @@ pnpm build          # 产物在 dist/
 - **Java**：换回备份的旧 jar 和旧配置（包括 `SMART_SEGMENT_PYTHON_BASE_URL`），重启。前提是旧 Python 服务还没停，所以验收前不要停它。旧 jar 没有 `/rest/agent`，要和 pangpt 一起回滚。
 - **注意**：新版运行期间导入或修改的切片，向量只写到了 doc-vector。回滚后要把这些切片在旧服务里重新向量化一次。
 - **doc-vector**：`cd ~/doc-vector && docker compose down`，数据卷会保留；不要加 `-v`。
-- **AgentRuntime**：把 `~/agent-runtime/compose.yaml` 里的标签改回原来的，`docker compose up -d`。会话数据在 `agent-data` 卷里。
+- **AgentRuntime**：`~/agent-runtime/.env` 里的 `IMAGE_TAG` 改回原来的，`docker compose up -d`。会话数据在 `agent-data` 卷里。
 - **doc-vector 升级到有问题的版本**：`.env` 里的 `IMAGE_TAG` 改回原来的，`docker compose up -d --no-build`。
 - **pangpt**：发布上一版镜像。
 

@@ -446,6 +446,7 @@ TOOL_API_BASE=http://host.docker.internal:9448/rest
 TOOL_HTTP_ALLOWED_ORIGINS=http://host.docker.internal:9448
 TOOL_API_TOKEN=${AGENT_TOOL_TOKEN}
 TOOL_CREDENTIAL_ALLOWLIST=TOOL_API_TOKEN
+IMAGE_TAG=sha-e2f68bc
 EOF
 )
 ```
@@ -459,7 +460,7 @@ cd ~/agent-runtime
 cat > compose.yaml <<'EOF'
 services:
   agent-runtime:
-    image: ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc
+    image: ghcr.io/1de2cvz/agent-runtime:${IMAGE_TAG:?在 .env 里设置 IMAGE_TAG}
     container_name: agent-runtime
     restart: unless-stopped
     env_file: .env
@@ -483,7 +484,8 @@ docker compose logs -f            # 看到「全部就绪」后 Ctrl+C
 - 对话端口只绑本机，Java 在同一台机器上，够用了。要从内网其他机器测试的话，二选一：
   - 用 SSH 隧道：`ssh -N -L 8770:127.0.0.1:8770 <用户>@<服务器>`，然后在本机访问 `http://127.0.0.1:8770`；
   - 把 `ports` 改成 `"8770:8770"`，并在防火墙里只放行测试机的 IP。
-- 改了 `.env` 或 `compose.yaml` 以后，执行 `docker compose up -d`，容器会重建。只 `restart` 不会重新读取 `.env`。
+- 版本号在 `.env` 的 `IMAGE_TAG` 里，`compose.yaml` 写好后不用再改。
+- 改了 `.env` 以后，执行 `docker compose up -d`，容器会重建。只 `restart` 不会重新读取 `.env`。
 
 ### 9.3 验证
 
@@ -556,12 +558,12 @@ docker push <正式镜像仓库>/<项目>/pangpt:prod-<日期>
 
 ## 12. 以后怎么升级
 
-1. 代码合并到 main 后，CI 会发布新镜像，标签是 `sha-<提交号>`。在开发环境拉取并验证新版本：doc-vector 改 `.env` 的 `IMAGE_TAG` 后 `docker compose pull && docker compose up -d --no-build`，AgentRuntime 改 `compose.yaml` 的标签后 `docker compose pull && docker compose up -d`，Java 重新打包。
+1. 代码合并到 main 后，CI 会发布新镜像，标签是 `sha-<提交号>`。在开发环境拉取并验证新版本：doc-vector 改 `.env` 的 `IMAGE_TAG` 后 `docker compose pull && docker compose up -d --no-build`，AgentRuntime 改 `.env` 的 `IMAGE_TAG` 后 `docker compose pull && docker compose up -d`，Java 重新打包。
 2. 只导出有变化的部分，例如：`docker save ghcr.io/1de2cvz/doc-vector:sha-<提交号> | gzip > doc-vector-sha-<提交号>.tar.gz`。**用具体的提交号标签，不要用 `latest`**，回滚时要用。
 3. 摆渡到正式环境，校验后 `docker load`。
 4. 切换版本：
    - doc-vector：改 `.env` 里的 `IMAGE_TAG`，执行 `docker compose up -d --no-build`；
-   - AgentRuntime：改 `compose.yaml` 里的标签，执行 `docker compose up -d`；
+   - AgentRuntime：改 `.env` 里的 `IMAGE_TAG`，执行 `docker compose up -d`；
    - Java：替换 jar，`systemctl restart digital-employee`。
 5. 回滚：切回旧标签或旧 jar，步骤同上。旧镜像不要急着 `docker rmi`。
 
