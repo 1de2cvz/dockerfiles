@@ -59,6 +59,14 @@ ls -l /opt/digital-employee/digital-employee-1.0.0.jar     # 换成你实际放 
 
 - 缺 AgentRuntime 镜像：先 `docker pull ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc`（要登录 GHCR，见部署手册 1.2）。
 - 缺 doc-vector 镜像：`cd ~/doc-vector && docker compose build`。
+- 代码是在构建镜像时拷进去的，之后 `git pull` 不会改变镜像。doc-vector 的标签 `1.0.0` 是手写的，看不出是哪个提交构建的，导出前先核对一下：
+
+  ```bash
+  docker image inspect doc-vector:1.0.0 --format '{{.Created}}'   # 镜像构建时间
+  git -C ~/doc-vector log -1 --format='%h %ci'                     # 当前代码的提交和时间
+  ```
+
+  如果镜像构建时间早于最后一次提交，说明镜像里是旧代码，要先重新构建再导出。
 - 缺 jar：见部署手册 3.1。服务器上没有 Maven 时，可以用容器打包：
 
   ```bash
@@ -540,8 +548,14 @@ docker push <正式镜像仓库>/<项目>/pangpt:prod-<日期>
 
 ## 12. 以后怎么升级
 
-1. 在开发环境更新并验证新版本（doc-vector 重新构建、AgentRuntime 拉新标签的镜像、Java 重新打包）。
-2. 只导出有变化的部分，例如：`docker save doc-vector:1.0.1 | gzip > doc-vector-1.0.1.tar.gz`。**镜像标签每次都换新的，不要覆盖旧标签**，回滚时要用。
+1. 在开发环境更新并验证新版本（doc-vector 重新构建、AgentRuntime 拉新标签的镜像、Java 重新打包）。doc-vector 的标签带上提交号，这样正式环境一看标签就知道是哪个版本：
+
+   ```bash
+   cd ~/doc-vector && git pull
+   sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=1.0.0-$(git rev-parse --short HEAD)/" .env
+   docker compose up -d --build && grep IMAGE_TAG .env
+   ```
+2. 只导出有变化的部分，例如：`docker save doc-vector:1.0.0-<提交号> | gzip > doc-vector-1.0.0-<提交号>.tar.gz`。**镜像标签每次都换新的，不要覆盖旧标签**，回滚时要用。
 3. 摆渡到正式环境，校验后 `docker load`。
 4. 切换版本：
    - doc-vector：改 `.env` 里的 `IMAGE_TAG`，执行 `docker compose up -d --no-build`；
