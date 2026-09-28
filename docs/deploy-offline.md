@@ -13,7 +13,7 @@
 | 服务 | 交付物 | 里面已经有 | 正式环境另外需要 |
 | --- | --- | --- | --- |
 | doc-vector | 镜像 `ghcr.io/1de2cvz/doc-vector:sha-f5a41c0`（CI 构建） | Python 代码、全部依赖、Milvus Lite | `docker-compose.yml`、`.env` |
-| AgentRuntime | 镜像 `ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc`（CI 构建） | 对话服务、模型网关、对话页、默认注册中心（Agent 和 kb_search 工具定义；第一次启动时拷进数据卷） | `compose.yaml`（9.2 现写）、`.env` |
+| AgentRuntime | 镜像 `ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc`（CI 构建） | 对话服务、模型网关、对话页、默认注册中心（Agent 和 kb_search 工具定义；第一次启动时拷进数据卷） | `compose.yaml`（1.3 带过来）、`.env` |
 | digital-employee（Java） | `digital-employee-1.0.0.jar`（不是镜像） | 编译好的代码和全部依赖（Spring Boot fat jar） | JDK 8、`/etc/digital-employee.env`、systemd 服务文件 |
 | pangpt | 镜像 | 打包好的前端页面、nginx 配置 | 正式环境的镜像仓库和 k8s |
 
@@ -101,7 +101,8 @@ docker save ghcr.io/1de2cvz/doc-vector:sha-f5a41c0 ghcr.io/1de2cvz/agent-runtime
 cp ~/pangpt-image.tar.gz .      # 1.2 生成的；pangpt 在别的机器上打包的话，从那里拷过来
 
 # 其余文件
-cp ~/doc-vector/docker-compose.yml doc-vector-compose.yml
+cp ~/doc-vector/docker-compose.yml doc-vector-compose.yml     # 开发环境部署、验证过的那两份
+cp ~/agent-runtime/compose.yaml agent-runtime-compose.yaml
 cp /opt/digital-employee/digital-employee-1.0.0.jar .      # 换成实际路径
 cp ~/digital-employee/sql/oracle/01_schema.sql .            # 正式库还没建表时要用
 
@@ -115,7 +116,7 @@ ls -lh
   - compose 插件：GitHub `docker/compose` 的 Releases；
   - JDK 8：用你们常用的发行版。
 
-- [ ] 导出目录里有 2 个镜像包、compose 文件、jar、建表脚本、`SHA256SUMS`
+- [ ] 导出目录里有 2 个镜像包、2 个 compose 文件、jar、建表脚本、`SHA256SUMS`
 
 ---
 
@@ -290,11 +291,11 @@ grep -E '^(EMBEDDING|RERANK)_(BASE_URL|MODEL|DIMENSION)' .env     # 核对，不
 ### 6.2 启动
 
 ```bash
-docker compose up -d --no-build
+docker compose config --images   # 应输出 ghcr.io/1de2cvz/doc-vector:sha-f5a41c0
+docker compose up -d
 docker compose ps              # STATUS 显示 healthy
 ```
 
-- **一定要加 `--no-build`**。compose 文件里写了 `build`，不加的话，镜像名或标签一对不上它就会尝试构建，离线环境会失败。
 - 报 `pull access denied` 或 `no such image`：`.env` 里的 `IMAGE_REPO`、`IMAGE_TAG` 和第 5 步导入的镜像不一致，用 `docker images | grep doc-vector` 对一下。
 
 ### 6.3 验证
@@ -458,48 +459,18 @@ EOF
 
 ### 9.2 启动
 
-compose 文件就是 AgentRuntime 仓库里的 `compose.allinone.yaml`，改名为 `compose.yaml`。下面直接写出它的内容：
+compose 文件用 1.3 带过来的那份（就是 AgentRuntime 仓库的 `compose.allinone.yaml`）：
 
 ```bash
 cd ~/agent-runtime
-cat > compose.yaml <<'EOF'
-name: agent-runtime
-
-services:
-  agent-runtime:
-    image: ${IMAGE_PREFIX:-}agent-runtime:${TAG:?在 .env 里设置 TAG，如 sha-<短提交号>}
-    container_name: agent-runtime
-    restart: unless-stopped
-    env_file: .env
-    extra_hosts:
-      # 工具经 host.docker.internal 访问宿主机上的业务系统（如 kb_search 回调 Java）。
-      # Linux 上的 Docker 默认没有这个主机名，要显式加上
-      - host.docker.internal:host-gateway
-    ports:
-      # 默认只绑回环。要从别的机器访问对话端口时在 .env 里设 CHAT_HOST_PORT=8770，并用防火墙限制来源
-      - "${CHAT_HOST_PORT:-127.0.0.1:8770}:8770"
-      # 管理服务只在 .env 里设了 ADMIN_ENABLED=1 和 ADMIN_TOKEN 时启动；只绑回环，经 SSH 隧道访问
-      - "${ADMIN_HOST_PORT:-127.0.0.1:8771}:8771"
-    volumes:
-      # 会话、注册中心、网关用量都在这里，见 DEPLOY.md「备份与恢复」
-      - agent-data:/app/data
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "5"
-
-volumes:
-  agent-data:
-    # 固定卷名，和 docker run 方式用的是同一个卷，两种方式可以互相切换
-    name: agent-data
-EOF
+cp ~/offline/agent-runtime-compose.yaml compose.yaml
+docker compose config --images        # 应输出 ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc
 docker compose up -d
-docker compose logs -f            # 看到「全部就绪」后 Ctrl+C
+docker compose logs -f                # 看到「全部就绪」后 Ctrl+C
 ```
 
 - 镜像第 5 步已经导入了，这里不用 `pull`。
-- 这个文件写好后不用再改。版本号在 `.env` 的 `TAG` 里（镜像前缀是 `IMAGE_PREFIX`），变量名沿用 AgentRuntime 仓库的约定。
+- compose 文件不用改。版本号在 `.env` 的 `TAG` 里（镜像前缀是 `IMAGE_PREFIX`），变量名沿用 AgentRuntime 仓库的约定。
 - `extra_hosts` 不能删：Linux 上的 Docker 默认没有 `host.docker.internal`，AgentRuntime 要靠它回调 Java 的 kb_search。
 - 端口默认只绑本机，Java 在同一台机器上，够用了。要从内网其他机器测试的话，二选一：
   - 用 SSH 隧道：`ssh -N -L 8770:127.0.0.1:8770 <用户>@<服务器>`，然后在本机访问 `http://127.0.0.1:8770`；
@@ -610,7 +581,7 @@ sed -i 's/^IMAGE_TAG=.*/IMAGE_TAG=sha-<新提交号>/' .env
 IMAGE=$(docker compose config --images)
 docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work --entrypoint python "$IMAGE" scripts/env_sync.py /work/.env
 docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work --entrypoint python "$IMAGE" scripts/env_sync.py /work/.env --write
-docker compose up -d --no-build
+docker compose up -d
 docker exec doc-vector python scripts/smoke_test.py; echo "退出码 $?"
 
 # AgentRuntime：改版本号，重建
@@ -625,7 +596,7 @@ docker compose up -d
 
 ### 12.3 回滚
 
-- doc-vector：`IMAGE_TAG` 改回旧值，执行 `docker compose up -d --no-build`。想把 `.env` 也完全还原，就用 `.env.bak.<时间>` 覆盖。
+- doc-vector：`IMAGE_TAG` 改回旧值，执行 `docker compose up -d`。想把 `.env` 也完全还原，就用 `.env.bak.<时间>` 覆盖。
 - AgentRuntime：`TAG` 改回旧值，执行 `docker compose up -d`。
 - Java：换回旧 jar，然后重启。
 - 旧镜像不要急着 `docker rmi`，回滚时要用。数据格式有变化、改回旧版本号也起不来时，用附录 B 的备份恢复数据卷，做法同部署手册 7.6。
@@ -643,7 +614,7 @@ docker compose up -d
 | 4.3 第 3 条没有 `tool_calls`，只返回了文字 | 对话模型或接口没开启工具调用 | Agent 就无法检索知识库。需要让模型服务方开启工具调用（例如 vLLM 要加 `--enable-auto-tool-choice` 和对应的 `--tool-call-parser`），或者换支持工具调用的模型 |
 | 报 SSL 或证书错误 | 内网 API 用的是 https 自签证书 | 能用 http 就改用 http；不行的话，要把内网 CA 证书打进镜像 |
 | 网关报 500「网关未配置上游密钥」 | `GATEWAY_UPSTREAM_KEY` 为空 | 随便填一个值（例如 `none`），然后重建容器 |
-| doc-vector 报「Embedding 维度不一致」 | `EMBEDDING_DIMENSION` 和模型实际输出的维度不一致 | 改对后：`docker compose down`，`docker volume rm doc-vector-milvus`，`docker compose up -d --no-build`，再做一次第 8 步 |
+| doc-vector 报「Embedding 维度不一致」 | `EMBEDDING_DIMENSION` 和模型实际输出的维度不一致 | 改对后：`docker compose down`，`docker volume rm doc-vector-milvus`，`docker compose up -d`，再做一次第 8 步 |
 
 其他问题（令牌、端口、nginx 缓冲等）和联网环境一样，见部署手册附录 A。
 

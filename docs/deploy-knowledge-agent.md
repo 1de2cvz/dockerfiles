@@ -37,6 +37,16 @@
 | AgentRuntime 管理 | 8771 | 不开 |
 | pangpt | 80 | k8s Service |
 
+**部署文件**：doc-vector 和 AgentRuntime 在服务器上各占一个目录，每个目录两个文件，不需要源码：
+
+| 服务 | 目录 | compose 文件（从仓库取，不改） | 配置 |
+| --- | --- | --- | --- |
+| doc-vector | `~/doc-vector/` | doc-vector 仓库的 [`docker-compose.yml`](https://github.com/1de2cvz/doc-vector/blob/main/docker-compose.yml) | `.env`（2.1 生成） |
+| AgentRuntime | `~/agent-runtime/` | AgentRuntime 仓库的 [`compose.allinone.yaml`](https://github.com/1de2cvz/AgentRuntime/blob/main/compose.allinone.yaml)，放到服务器上改名为 `compose.yaml` | `.env`（4.1 生成） |
+
+- compose 文件从 GitHub 仓库页面下载（点 Raw），或者从别的机器拷过来。发给别人部署时，也就是这两个文件加一份 `.env`。
+- compose 文件不要直接改。版本号、端口、地址都在 `.env` 里；`.env` 管不到的定制（比如限制内存、加挂载目录），写在同目录的 override 文件里（doc-vector 用 `docker-compose.override.yml`，AgentRuntime 用 `compose.override.yaml`），compose 会自动合并。
+
 ---
 
 ## 1. 准备
@@ -111,13 +121,13 @@ cat ~/deploy-secrets.env | cut -d= -f1      # 只看名字，确认 8 项都在
 
 ## 2. 部署 doc-vector
 
-### 2.1 取 compose 文件、写配置
+### 2.1 放 compose 文件、写配置
 
-镜像由 doc-vector 的 CI 构建好了，服务器上不构建。代码仓库只用来取 `docker-compose.yml`。
+镜像由 CI 构建好了，服务器上不构建，也不需要源码。先把 doc-vector 仓库的 `docker-compose.yml` 放到 `~/doc-vector/`（见第 0 步「部署文件」），再生成 `.env`：
 
 ```bash
-git clone https://github.com/1de2cvz/doc-vector.git ~/doc-vector
-cd ~/doc-vector && git checkout main
+mkdir -p ~/doc-vector && cd ~/doc-vector
+ls docker-compose.yml                 # 确认 compose 文件已经放好
 . ~/deploy-secrets.env
 ( umask 077
 cat > .env <<EOF
@@ -149,12 +159,11 @@ EOF
 ### 2.2 拉取镜像并启动
 
 ```bash
+docker compose config --images   # 应输出 ghcr.io/1de2cvz/doc-vector:sha-f5a41c0
 docker compose pull
-docker compose up -d --no-build
-docker compose ps              # STATUS 显示 healthy
+docker compose up -d
+docker compose ps                # STATUS 显示 healthy
 ```
-
-- `--no-build`：compose 文件里保留了本地构建用的 `build` 段，加上这个参数，镜像拉不下来时会直接报错，而不是在服务器上开始构建。
 
 ### 2.3 验证
 
@@ -359,49 +368,19 @@ EOF
 
 ### 4.2 启动
 
-compose 文件就是 AgentRuntime 仓库里的 [`compose.allinone.yaml`](https://github.com/1de2cvz/AgentRuntime/blob/main/compose.allinone.yaml)，改名为 `compose.yaml`，和 `.env` 放在一起。下面直接写出它的内容：
+先把 AgentRuntime 仓库的 [`compose.allinone.yaml`](https://github.com/1de2cvz/AgentRuntime/blob/main/compose.allinone.yaml) 放到 `~/agent-runtime/`，改名为 `compose.yaml`（见第 0 步「部署文件」）：
 
 ```bash
 cd ~/agent-runtime
-cat > compose.yaml <<'EOF'
-name: agent-runtime
-
-services:
-  agent-runtime:
-    image: ${IMAGE_PREFIX:-}agent-runtime:${TAG:?在 .env 里设置 TAG，如 sha-<短提交号>}
-    container_name: agent-runtime
-    restart: unless-stopped
-    env_file: .env
-    extra_hosts:
-      # 工具经 host.docker.internal 访问宿主机上的业务系统（如 kb_search 回调 Java）。
-      # Linux 上的 Docker 默认没有这个主机名，要显式加上
-      - host.docker.internal:host-gateway
-    ports:
-      # 默认只绑回环。要从别的机器访问对话端口时在 .env 里设 CHAT_HOST_PORT=8770，并用防火墙限制来源
-      - "${CHAT_HOST_PORT:-127.0.0.1:8770}:8770"
-      # 管理服务只在 .env 里设了 ADMIN_ENABLED=1 和 ADMIN_TOKEN 时启动；只绑回环，经 SSH 隧道访问
-      - "${ADMIN_HOST_PORT:-127.0.0.1:8771}:8771"
-    volumes:
-      # 会话、注册中心、网关用量都在这里，见 DEPLOY.md「备份与恢复」
-      - agent-data:/app/data
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "5"
-
-volumes:
-  agent-data:
-    # 固定卷名，和 docker run 方式用的是同一个卷，两种方式可以互相切换
-    name: agent-data
-EOF
+ls compose.yaml .env                  # 两个文件都在
+docker compose config --images        # 应输出 ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc
 docker compose pull
 docker compose up -d
-docker compose logs -f            # 看到「全部就绪」后 Ctrl+C
+docker compose logs -f                # 看到「全部就绪」后 Ctrl+C
 ```
 
-- 这个文件写好后不用再改。版本号在 `.env` 的 `TAG` 里，升级、回滚见第 7 章。
-- `extra_hosts` 不能删：Linux 上的 Docker 默认没有 `host.docker.internal`，AgentRuntime 要靠它回调 Java 的 kb_search。
+- compose 文件不用改。版本号在 `.env` 的 `TAG` 里，升级、回滚见第 7 章。
+- compose 文件里的 `extra_hosts` 不能删：Linux 上的 Docker 默认没有 `host.docker.internal`，AgentRuntime 要靠它回调 Java 的 kb_search。
 - 改了 `.env` 以后执行 `docker compose up -d`，容器会重建；只 `restart` 不会重新读取 `.env`。
 
 在云服务器的安全组（或防火墙）里，8770 端口只放行 Java 服务器和你自己的 IP。这里走的是明文 HTTP，令牌和对话内容在网络上都可见。
@@ -502,7 +481,8 @@ pnpm build          # 产物在 dist/
 
 | | 放在哪 | 升级时改不改 |
 | --- | --- | --- |
-| 启动方式（镜像名、端口、数据卷、日志） | `docker-compose.yml` / `compose.yaml` | 不改。只有发布说明写了「compose 文件有变化」时才换新文件 |
+| 启动方式（镜像名、端口、数据卷、日志） | `docker-compose.yml` / `compose.yaml` | 不改。只有发布说明写了「compose 文件有变化」时，才从仓库取新文件替换 |
+| 自己的定制 | override 文件（见第 0 步「部署文件」） | 按需改，换 compose 文件时不受影响 |
 | 版本号 | `.env`：doc-vector 是 `IMAGE_TAG`，AgentRuntime 是 `TAG` | 改 |
 | 配置和密钥 | `.env` | 新版本新增配置项时补上 |
 | 数据（向量、会话） | 数据卷 `doc-vector-milvus`、`doc-vector-uploads`、`agent-data` | 不动，重建容器不影响 |
@@ -550,7 +530,7 @@ docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work --entrypoint python "$IMA
 docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work --entrypoint python "$IMAGE" scripts/env_sync.py /work/.env --write
 tail -n 20 .env                   # 看一下补了什么，按需修改
 
-docker compose up -d --no-build
+docker compose up -d
 docker compose ps                 # STATUS 显示 healthy
 curl -fsS http://127.0.0.1:8000/api/v1/health/ready; echo
 docker exec doc-vector python scripts/smoke_test.py; echo "退出码 $?"
@@ -582,7 +562,7 @@ docker compose logs -f            # 看到「全部就绪」后 Ctrl+C
 
 | 服务 | 做法 |
 | --- | --- |
-| doc-vector | `.env` 里的 `IMAGE_TAG` 改回 7.2 记下的旧值，执行 `docker compose up -d --no-build`。env_sync 追加的配置项留着也没关系，旧版本会忽略；想完全还原，就用 `.env.bak.<时间>` 覆盖 `.env` |
+| doc-vector | `.env` 里的 `IMAGE_TAG` 改回 7.2 记下的旧值，执行 `docker compose up -d`。env_sync 追加的配置项留着也没关系，旧版本会忽略；想完全还原，就用 `.env.bak.<时间>` 覆盖 `.env` |
 | AgentRuntime | `.env` 里的 `TAG` 改回旧值，执行 `docker compose up -d` |
 | Java | 换回旧 jar，`sudo systemctl restart digital-employee` |
 | pangpt | 发布上一版镜像 |
