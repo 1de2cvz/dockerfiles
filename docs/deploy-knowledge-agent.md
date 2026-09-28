@@ -6,9 +6,9 @@
 
 | 仓库 | 使用的版本 |
 | --- | --- |
-| [doc-vector](https://github.com/1de2cvz/doc-vector) | 镜像 `ghcr.io/1de2cvz/doc-vector:sha-8a8bda2`（CI 发布，含 #6、#7） |
+| [doc-vector](https://github.com/1de2cvz/doc-vector) | 镜像 `ghcr.io/1de2cvz/doc-vector:sha-f5a41c0`（CI 发布，含 #6–#8，镜像里带升级用的 env_sync） |
 | [digital-employee](https://github.com/1de2cvz/digital-employee) | `main`（`cb42af6`，含 #2–#5） |
-| [AgentRuntime](https://github.com/1de2cvz/AgentRuntime) | 镜像 `ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc`（含 #12） |
+| [AgentRuntime](https://github.com/1de2cvz/AgentRuntime) | 镜像 `ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc`（含 #12）；compose 文件取 `main` 上的 `compose.allinone.yaml`（#13） |
 | [pangpt](https://github.com/1de2cvz/pangpt) | `main`（含 #1、#2） |
 
 ---
@@ -135,7 +135,7 @@ RERANK_MODEL=BAAI/bge-reranker-v2-m3
 RERANK_API_KEY=${SF_KEY}
 UPSTREAM_TIMEOUT=60
 IMAGE_REPO=ghcr.io/1de2cvz/doc-vector
-IMAGE_TAG=sha-8a8bda2
+IMAGE_TAG=sha-f5a41c0
 HOST_PORT=127.0.0.1:8000
 WORKERS=1
 EOF

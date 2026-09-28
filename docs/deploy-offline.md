@@ -12,7 +12,7 @@
 
 | 服务 | 交付物 | 里面已经有 | 正式环境另外需要 |
 | --- | --- | --- | --- |
-| doc-vector | 镜像 `ghcr.io/1de2cvz/doc-vector:sha-8a8bda2`（CI 构建） | Python 代码、全部依赖、Milvus Lite | `docker-compose.yml`、`.env` |
+| doc-vector | 镜像 `ghcr.io/1de2cvz/doc-vector:sha-f5a41c0`（CI 构建） | Python 代码、全部依赖、Milvus Lite | `docker-compose.yml`、`.env` |
 | AgentRuntime | 镜像 `ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc`（CI 构建） | 对话服务、模型网关、对话页、默认注册中心（Agent 和 kb_search 工具定义；第一次启动时拷进数据卷） | `compose.yaml`（9.2 现写）、`.env` |
 | digital-employee（Java） | `digital-employee-1.0.0.jar`（不是镜像） | 编译好的代码和全部依赖（Spring Boot fat jar） | JDK 8、`/etc/digital-employee.env`、systemd 服务文件 |
 | pangpt | 镜像 | 打包好的前端页面、nginx 配置 | 正式环境的镜像仓库和 k8s |
@@ -53,7 +53,7 @@
 
 ```bash
 docker login ghcr.io -u 1de2cvz       # 令牌需要 read:packages 权限，见部署手册 1.2；登录过就跳过
-docker pull ghcr.io/1de2cvz/doc-vector:sha-8a8bda2
+docker pull ghcr.io/1de2cvz/doc-vector:sha-f5a41c0
 docker pull ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc
 ls -l /opt/digital-employee/digital-employee-1.0.0.jar     # 换成你实际放 jar 的路径
 ```
@@ -97,7 +97,7 @@ git checkout nginx/default.conf        # 恢复开发环境的配置，正式地
 OUT=~/offline-$(date +%Y%m%d) && mkdir -p "$OUT" && cd "$OUT"
 
 # 镜像：docker save 会带上基础镜像的所有层，正式环境不需要再拉
-docker save ghcr.io/1de2cvz/doc-vector:sha-8a8bda2 ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc | gzip > server-images.tar.gz
+docker save ghcr.io/1de2cvz/doc-vector:sha-f5a41c0 ghcr.io/1de2cvz/agent-runtime:sha-e2f68bc | gzip > server-images.tar.gz
 cp ~/pangpt-image.tar.gz .      # 1.2 生成的；pangpt 在别的机器上打包的话，从那里拷过来
 
 # 其余文件
@@ -275,7 +275,7 @@ RERANK_MODEL=${RR_MODEL}
 RERANK_API_KEY=${RR_KEY}
 UPSTREAM_TIMEOUT=60
 IMAGE_REPO=ghcr.io/1de2cvz/doc-vector
-IMAGE_TAG=sha-8a8bda2
+IMAGE_TAG=sha-f5a41c0
 HOST_PORT=127.0.0.1:8000
 WORKERS=1
 EOF
